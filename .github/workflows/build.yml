@@ -1,0 +1,87 @@
+name: Build
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
+jobs:
+  build:
+    strategy:
+      matrix:
+        include:
+          - os: ubuntu-latest
+            platform: linux-x64
+          - os: ubuntu-24.04-arm
+            platform: linux-arm64
+          - os: macos-latest
+            platform: darwin-arm64
+          - os: macos-15-intel
+            platform: darwin-x64
+          - os: windows-latest
+            platform: win32-x64
+          - os: windows-11-arm
+            platform: win32-arm64
+
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+
+      # Build tools needed for Linux package formats
+      - name: Install Linux build dependencies
+        if: startsWith(matrix.platform, 'linux')
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y rpm elfutils \
+            libx11-dev libxtst-dev libxt-dev libxrandr-dev libxinerama-dev
+          echo '%__strip /bin/true' >> ~/.rpmmacros
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build (make)
+        run: npm run make
+
+      - name: Collect distributable files
+        shell: bash
+        run: |
+          mkdir -p dist
+          find out/make -type f \( -name '*.zip' -o -name '*.dmg' -o -name '*.deb' -o -name '*.rpm' -o -name '*.AppImage' \) -exec cp {} dist/ \;
+          ls -la dist/
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: snoop-${{ matrix.platform }}
+          path: dist/*
+
+  release:
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Create release
+        uses: softprops/action-gh-release@v2
+        with:
+          draft: true
+          files: artifacts/**/*
