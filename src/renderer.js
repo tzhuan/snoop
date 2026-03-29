@@ -66,22 +66,32 @@ PIXEL_WORKER.onmessage = function(e) {
 }
 
 async function initCapture() {
+  // Try desktopCapturer (works on X11, macOS, Windows)
   const sources = await window.snoop.getSources()
-  if (sources.length === 0) {
-    console.error('No screen sources available')
-    return
+  if (sources.length > 0) {
+    try {
+      RUNTIME.stream = await navigator.mediaDevices.getUserMedia({
+        audio: false,
+        video: {
+          mandatory: {
+            chromeMediaSource: 'desktop',
+            chromeMediaSourceId: sources[0].id,
+          },
+          cursor: 'never',
+        },
+      })
+      VIDEO.srcObject = RUNTIME.stream
+      return
+    } catch (err) {
+      console.warn('desktopCapturer failed, trying getDisplayMedia:', err)
+    }
   }
 
+  // Fallback to getDisplayMedia (needed on Wayland via PipeWire portal)
   try {
-    RUNTIME.stream = await navigator.mediaDevices.getUserMedia({
+    RUNTIME.stream = await navigator.mediaDevices.getDisplayMedia({
       audio: false,
-      video: {
-        mandatory: {
-          chromeMediaSource: 'desktop',
-          chromeMediaSourceId: sources[0].id,
-        },
-        cursor: 'never',
-      },
+      video: { cursor: 'never' },
     })
     VIDEO.srcObject = RUNTIME.stream
   } catch (err) {

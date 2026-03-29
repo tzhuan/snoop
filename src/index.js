@@ -98,6 +98,17 @@ const createWindow = () => {
 
   MAIN_WINDOW.loadFile(path.join(__dirname, 'index.html'))
 
+  // Allow getDisplayMedia (needed for Wayland PipeWire portal)
+  MAIN_WINDOW.webContents.session.setDisplayMediaRequestHandler((_request, callback) => {
+    desktopCapturer.getSources({ types: ['screen'] }).then((sources) => {
+      if (sources.length > 0) {
+        callback({ video: sources[0] })
+      } else {
+        callback({})
+      }
+    })
+  })
+
   // Prevent title from being overwritten by <title> tag
   MAIN_WINDOW.on('page-title-updated', (e) => e.preventDefault())
 
