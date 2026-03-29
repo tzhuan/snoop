@@ -85,7 +85,7 @@ npm start -- -4 -h -top -grid
 | `Shift+Arrow` | Fast move (configurable step, default 8px) |
 | `Ctrl+Arrow` | Peg to screen boundary |
 | `Space+Arrow` | Resize window |
-| `Alt+Arrow` | Adjust focus offset (X11 only) |
+| `Alt+Arrow` | Adjust focus offset (X11 and Windows) |
 
 ### Adjustments
 
@@ -151,13 +151,13 @@ npm run make       # Create platform installers
 ## Platform Notes
 
 - **macOS**: Requires screen recording permission (System Settings > Privacy & Security > Screen Recording).
-- **X11**: Alt+Arrow focus offset adjustment is available to compensate for cursor-capture coordinate mismatch.
+- **X11 / Windows**: Alt+Arrow focus offset adjustment is available to compensate for cursor-capture coordinate mismatch.
 - **Wayland**: Screen capture may have limitations depending on the compositor.
 - **Active window coordinates**: Supported on macOS and Windows only (requires `active-win` native module).
 
 ## Known Issues
 
-- **Cursor always rendered on X11**: On X11, the screen capture includes the mouse cursor, which appears in the magnified view. Use `Alt+Arrow` keys to adjust the focus offset as a workaround.
+- **Cursor always rendered on X11 and Windows**: The screen capture includes the mouse cursor on X11 and Windows due to OS-level cursor compositing (`cursor: 'never'` is not effective). Use `Alt+Arrow` keys to adjust the focus offset as a workaround.
 - **Active window coordinates unavailable on Unix-like systems**: The active window coordinate mode (`W`) relies on the `active-win` native module, which only supports macOS and Windows. On X11/Wayland this feature is disabled.
 - **`d` key (show capture region) not implemented**: The original Snoop can temporarily show the captured screen region. This requires a transparent overlay window and is not implemented.
 - **`#` key (grid toggle) not implemented**: The `#` shortcut is keyboard-layout dependent. Use `F3` instead.

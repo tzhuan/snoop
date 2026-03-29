@@ -11,6 +11,7 @@ const __dirname = path.dirname(__filename)
 // Active window tracking only supported on macOS and Windows (native API via active-win)
 const SUPPORTS_ACTIVE_WINDOW = process.platform === 'darwin' || process.platform === 'win32'
 const IS_X11 = process.env.XDG_SESSION_TYPE === 'x11'
+const HAS_CURSOR_IN_CAPTURE = IS_X11 || process.platform === 'win32'
 
 
 let MAIN_WINDOW
@@ -697,7 +698,7 @@ function startMouseTracking() {
     // Arrow keys
     const dir = arrowKeyMap[e.keycode]
     if (dir) {
-      if (IS_X11 && e.altKey) {
+      if (HAS_CURSOR_IN_CAPTURE && e.altKey) {
         // Alt+Arrow on X11: adjust focus offset
         if (dir === 'up') CONFIG.focusOffsetY--
         else if (dir === 'down') CONFIG.focusOffsetY++
