@@ -1,23 +1,23 @@
 import { createRequire } from 'module';
+import { fileURLToPath } from 'url';
+import path from 'path';
+
 const require = createRequire(import.meta.url);
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const platform = `${process.platform}-${process.arch}`;
 
 let native = null;
-try {
-  native = require('./build/Release/snoop_active_window.node');
-} catch {
-  // Native addon not built — fall through to active-win shim
+for (const p of [
+  path.join(__dirname, 'prebuilds', platform, 'snoop_active_window.node'),
+  path.join(__dirname, 'build', 'Release', 'snoop_active_window.node'),
+]) {
+  try { native = require(p); break; } catch {}
 }
 
 export function getActiveWindow() {
-  if (native) {
-    return native.getActiveWindow();
-  }
-  return null;
+  return native ? native.getActiveWindow() : null;
 }
 
 export function getCursorPosition() {
-  if (native) {
-    return native.getCursorPosition();
-  }
-  return null;
+  return native ? native.getCursorPosition() : null;
 }

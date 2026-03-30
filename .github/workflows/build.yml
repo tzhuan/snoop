@@ -60,6 +60,16 @@ jobs:
       - name: Build @snoop/capture
         run: npx cmake-js compile -d packages/capture
 
+      # Copy .node files to prebuilds/<platform>-<arch>/ for distribution
+      - name: Stage prebuilt binaries
+        shell: bash
+        run: |
+          PREBUILD_DIR=${{ matrix.platform }}
+          mkdir -p packages/active-window/prebuilds/$PREBUILD_DIR
+          mkdir -p packages/capture/prebuilds/$PREBUILD_DIR
+          cp packages/active-window/build/Release/*.node packages/active-window/prebuilds/$PREBUILD_DIR/
+          cp packages/capture/build/Release/*.node packages/capture/prebuilds/$PREBUILD_DIR/
+
       # Rebuild native addons for Electron's Node version
       - name: Rebuild native addons for Electron
         run: npx electron-rebuild -w @snoop/active-window @snoop/capture

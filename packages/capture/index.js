@@ -1,5 +1,9 @@
 import { createRequire } from 'module';
+import { fileURLToPath } from 'url';
+import path from 'path';
+
 const require = createRequire(import.meta.url);
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 // Backend names in order of preference.
 // On Linux: pipewire first (Wayland + GNOME X11), then x11 (XShm fallback).
@@ -15,12 +19,21 @@ const BACKEND_NAMES = FORCE_BACKEND
   ? [`snoop_capture_${FORCE_BACKEND}`]
   : ALL_BACKENDS;
 
+// Try prebuilt binary first (prebuilds/<platform>-<arch>/), then build/Release/
 function loadBackend(name) {
-  try {
-    return require(`./build/Release/${name}.node`);
-  } catch {
-    return null;
+  const platform = `${process.platform}-${process.arch}`;
+  const paths = [
+    path.join(__dirname, 'prebuilds', platform, `${name}.node`),
+    path.join(__dirname, 'build', 'Release', `${name}.node`),
+  ];
+  for (const p of paths) {
+    try {
+      return require(p);
+    } catch {
+      // Not available at this path
+    }
   }
+  return null;
 }
 
 const noopCapture = {
