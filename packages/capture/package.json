@@ -4,5 +4,13 @@
   "description": "Cross-platform screen capture via native APIs",
   "main": "index.js",
   "type": "module",
-  "license": "BSD-3-Clause"
+  "license": "BSD-3-Clause",
+  "scripts": {
+    "build": "cmake-js compile",
+    "build:electron": "cmake-js compile --runtime=electron --runtime-version=$(node -e \"console.log(require('electron/package.json').version)\")"
+  },
+  "devDependencies": {
+    "cmake-js": "^7.3.0",
+    "node-addon-api": "^8.3.1"
+  }
 }
