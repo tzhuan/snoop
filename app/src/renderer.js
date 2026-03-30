@@ -9,7 +9,6 @@ const CONFIG = structuredClone(DEFAULT_CONFIG)
 
 // Capture mode: 'video' (desktopCapturer/getDisplayMedia) or 'native' (PipeWire addon)
 let CAPTURE_MODE = 'video'
-let NATIVE_FRAME = null
 
 // Runtime state (not persisted)
 const RUNTIME = {
@@ -24,8 +23,6 @@ const RUNTIME = {
   workerFrameId: 0,
   pendingFrame: null,
   refreshTimerId: null,
-  nativeRegionX: 0,
-  nativeRegionY: 0,
 }
 
 const RULER_SIZE = 12
@@ -72,16 +69,15 @@ PIXEL_WORKER.onmessage = function(e) {
 }
 
 async function initCapture() {
-  // Receive native frames and ACK to allow next frame
-  window.snoop.onNativeFrame((data) => {
-    NATIVE_FRAME = data
-  })
-
   const sources = await window.snoop.getSources()
 
-  // Native capture mode (Linux)
+  // Native capture mode (Linux) — addon loaded in preload, zero-copy frames
   if (sources.length > 0 && sources[0].id === '__native__') {
     CAPTURE_MODE = 'native'
+    const ret = window.snoop.startNativeCapture()
+    if (ret !== 0) {
+      console.warn('Native capture failed to start')
+    }
     return
   }
 
@@ -136,21 +132,20 @@ function needsWorkerProcessing() {
 
 function renderFrame() {
   if (CAPTURE_MODE === 'native') {
-    if (!NATIVE_FRAME) return
+    const frame = window.snoop.getNativeFrame()
+    if (!frame) return
 
     try {
-      const { buffer, width, height, regionX, regionY } = NATIVE_FRAME
+      const { buffer, width, height } = frame
       OFFSCREEN.width = width
       OFFSCREEN.height = height
-      RUNTIME.nativeRegionX = regionX || 0
-      RUNTIME.nativeRegionY = regionY || 0
+      // buffer is an ArrayBuffer directly from the C addon — zero-copy
       const pixels = new Uint8ClampedArray(buffer)
       const imageData = new ImageData(pixels, width, height)
       OFF_CTX.putImageData(imageData, 0, 0)
     } catch (err) {
       console.error('native renderFrame error:', err)
     }
-    NATIVE_FRAME = null
   } else {
     if (VIDEO.readyState < VIDEO.HAVE_CURRENT_DATA) return
 
@@ -173,19 +168,17 @@ function renderFrame() {
   const srcW = vpW / CONFIG.zoomLevel
   const srcH = vpH / CONFIG.zoomLevel
 
-  // In native capture mode, OFFSCREEN contains a cropped region starting at (regionX, regionY).
-  // Map screen-space cursor coordinates to OFFSCREEN-local coordinates.
-  const regionOffsetX = CAPTURE_MODE === 'native' ? (RUNTIME.nativeRegionX || 0) : 0
-  const regionOffsetY = CAPTURE_MODE === 'native' ? (RUNTIME.nativeRegionY || 0) : 0
-  let centerX = RUNTIME.cursorX - regionOffsetX
-  let centerY = RUNTIME.cursorY - regionOffsetY
-  if (CONFIG.boundMode && OFFSCREEN.width > 0 && OFFSCREEN.height > 0) {
-    centerX = Math.max(srcW / 2, Math.min(OFFSCREEN.width - srcW / 2, centerX))
-    centerY = Math.max(srcH / 2, Math.min(OFFSCREEN.height - srcH / 2, centerY))
+  // Bound mode: clamp cursor to screen boundaries (like reference snoop 0.34)
+  let curX = RUNTIME.cursorX
+  let curY = RUNTIME.cursorY
+  if (CONFIG.boundMode && RUNTIME.screenWidth > 0 && RUNTIME.screenHeight > 0) {
+    curX = Math.max(0, Math.min(RUNTIME.screenWidth - 1, curX))
+    curY = Math.max(0, Math.min(RUNTIME.screenHeight - 1, curY))
   }
 
-  const srcX = centerX - srcW / 2
-  const srcY = centerY - srcH / 2
+  // Calculate source region in screen space (can be negative at edges)
+  const screenSrcX = curX - srcW / 2
+  const screenSrcY = curY - srcH / 2
 
   // When worker processing is needed, draw to buffer canvas instead of
   // the visible canvas to avoid flashing unprocessed frames
@@ -198,23 +191,42 @@ function renderFrame() {
   drawCtx.fillStyle = '#000'
   drawCtx.fillRect(0, 0, CANVAS.width, CANVAS.height)
 
-  const clampedSrcX = Math.max(0, srcX)
-  const clampedSrcY = Math.max(0, srcY)
-  const clampedSrcR = Math.min(OFFSCREEN.width, srcX + srcW)
-  const clampedSrcB = Math.min(OFFSCREEN.height, srcY + srcH)
-  const clampedSrcW = clampedSrcR - clampedSrcX
-  const clampedSrcH = clampedSrcB - clampedSrcY
+  // Clamp source to screen boundaries
+  const screenW = CAPTURE_MODE === 'native' ? RUNTIME.screenWidth : OFFSCREEN.width
+  const screenH = CAPTURE_MODE === 'native' ? RUNTIME.screenHeight : OFFSCREEN.height
+  const clampedScreenX = Math.max(0, screenSrcX)
+  const clampedScreenY = Math.max(0, screenSrcY)
+  const clampedScreenR = Math.min(screenW, screenSrcX + srcW)
+  const clampedScreenB = Math.min(screenH, screenSrcY + srcH)
+  const clampedSrcW = clampedScreenR - clampedScreenX
+  const clampedSrcH = clampedScreenB - clampedScreenY
 
   if (clampedSrcW > 0 && clampedSrcH > 0) {
-    const dstX = vpX + (clampedSrcX - srcX) * CONFIG.zoomLevel
-    const dstY = vpY + (clampedSrcY - srcY) * CONFIG.zoomLevel
+    // Map screen coordinates to OFFSCREEN coordinates
+    let offSrcX, offSrcY
+    if (CAPTURE_MODE === 'native') {
+      const region = window.snoop.getCaptureRegion()
+      // Actual captured region starts at max(0, region.x) in screen space
+      const actualRegionX = Math.max(0, region.x)
+      const actualRegionY = Math.max(0, region.y)
+      offSrcX = clampedScreenX - actualRegionX
+      offSrcY = clampedScreenY - actualRegionY
+    } else {
+      offSrcX = clampedScreenX
+      offSrcY = clampedScreenY
+    }
+
+    const dstX = vpX + (clampedScreenX - screenSrcX) * CONFIG.zoomLevel
+    const dstY = vpY + (clampedScreenY - screenSrcY) * CONFIG.zoomLevel
     const dstW = clampedSrcW * CONFIG.zoomLevel
     const dstH = clampedSrcH * CONFIG.zoomLevel
 
     drawCtx.imageSmoothingEnabled = false
-    drawCtx.drawImage(OFFSCREEN, clampedSrcX, clampedSrcY, clampedSrcW, clampedSrcH, dstX, dstY, dstW, dstH)
+    drawCtx.drawImage(OFFSCREEN, offSrcX, offSrcY, clampedSrcW, clampedSrcH, dstX, dstY, dstW, dstH)
   }
 
+  const srcX = screenSrcX
+  const srcY = screenSrcY
   const frameContext = { vpX, vpY, vpW, vpH, srcX, srcY, srcW, srcH }
 
   if (useWorker) {
@@ -645,8 +657,9 @@ function updateStatusBar() {
     let px = Math.floor(RUNTIME.cursorX)
     let py = Math.floor(RUNTIME.cursorY)
     if (CAPTURE_MODE === 'native') {
-      px -= RUNTIME.nativeRegionX || 0
-      py -= RUNTIME.nativeRegionY || 0
+      const region = window.snoop.getCaptureRegion()
+      px -= region.x
+      py -= region.y
     }
     if (px >= 0 && px < OFFSCREEN.width && py >= 0 && py < OFFSCREEN.height) {
       const pixel = OFF_CTX.getImageData(px, py, 1, 1).data

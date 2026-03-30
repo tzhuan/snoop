@@ -154,10 +154,12 @@ static void *capture_thread(void *arg) {
         int stride = state->image->bytes_per_line;
 
         if (state->has_region) {
-            int rx = state->region_x < 0 ? 0 : state->region_x;
-            int ry = state->region_y < 0 ? 0 : state->region_y;
+            int rx = state->region_x;
+            int ry = state->region_y;
             int rw = state->region_w;
             int rh = state->region_h;
+            if (rx < 0) { rw += rx; rx = 0; }
+            if (ry < 0) { rh += ry; ry = 0; }
             if (rx + rw > width) rw = width - rx;
             if (ry + rh > height) rh = height - ry;
 

@@ -1,4 +1,4 @@
-const { contextBridge, ipcRenderer } = require('electron')
+import { contextBridge, ipcRenderer } from 'electron'
 
 contextBridge.exposeInMainWorld('dialogAPI', {
   submit: (data) => ipcRenderer.send('dialog-submit', data),

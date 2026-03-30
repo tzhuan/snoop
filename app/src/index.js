@@ -3,7 +3,6 @@ import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { uIOhook, UiohookKey } from 'uiohook-napi'
 import { getActiveWindow as nativeGetActiveWindow } from '@snoop/active-window'
-import { createCapture } from '@snoop/capture'
 import pkg from '../package.json' with { type: 'json' }
 import { DEFAULT_CONFIG } from './config-defaults.js'
 
@@ -18,8 +17,6 @@ const SUPPORTS_ACTIVE_WINDOW = process.platform === 'darwin' || process.platform
 
 
 let MAIN_WINDOW
-let nativeCapture = null
-let captureRegion = { x: 0, y: 0 }
 let cursorPos = { x: 0, y: 0 } // Logical cursor position (mouse or arrow mode)
 
 const CONFIG = structuredClone(DEFAULT_CONFIG)
@@ -97,7 +94,9 @@ const createWindow = () => {
     title: `Snoop ×${CONFIG.zoomLevel} [${CONFIG.inputMode === 'arrow' ? 'A' : 'M'}] 32-bit`,
     icon: path.join(__dirname, '..', 'assets', 'icon_256x256.png'),
     webPreferences: {
-      preload: path.join(__dirname, 'preload.cjs'),
+      preload: path.join(__dirname, 'preload.js'),
+      contextIsolation: false,
+      sandbox: false,
       backgroundThrottling: false,
     },
   })
@@ -127,11 +126,11 @@ const createWindow = () => {
   })
 
   MAIN_WINDOW.on('minimize', () => {
-    if (nativeCapture) nativeCapture.suspend()
+    sendToRenderer('capture-suspend')
   })
 
   MAIN_WINDOW.on('restore', () => {
-    if (nativeCapture) nativeCapture.resume()
+    sendToRenderer('capture-resume')
   })
 
   MAIN_WINDOW.on('closed', () => {
@@ -150,7 +149,7 @@ function showRefreshRateDialog() {
     maximizable: false,
     autoHideMenuBar: true,
     webPreferences: {
-      preload: path.join(__dirname, 'preload-dialog.cjs'),
+      preload: path.join(__dirname, 'preload-dialog.js'),
     },
   })
 
@@ -195,7 +194,7 @@ function showDisplayOptionsDialog() {
     maximizable: false,
     autoHideMenuBar: true,
     webPreferences: {
-      preload: path.join(__dirname, 'preload-dialog.cjs'),
+      preload: path.join(__dirname, 'preload-dialog.js'),
     },
   })
 
@@ -670,9 +669,7 @@ ipcMain.on('dialog-submit', (event, data) => {
   // Refresh rate dialog
   CONFIG.refreshEnabled = data.enabled
   CONFIG.refreshInterval = Math.max(1, data.interval)
-  if (nativeCapture) {
-    nativeCapture.setRate(Math.round(100 / CONFIG.refreshInterval))
-  }
+  sendToRenderer('capture-rate', Math.round(100 / CONFIG.refreshInterval))
   sendConfigToRenderer()
   if (win) win.close()
 })
@@ -716,13 +713,13 @@ function sendScreenInfo() {
 }
 
 function updateCaptureRegion() {
-  if (!nativeCapture || !MAIN_WINDOW || MAIN_WINDOW.isDestroyed()) return
+  if (!MAIN_WINDOW || MAIN_WINDOW.isDestroyed()) return
   const [winW, winH] = MAIN_WINDOW.getSize()
   const halfW = Math.ceil(winW / CONFIG.zoomLevel / 2) + 1
   const halfH = Math.ceil(winH / CONFIG.zoomLevel / 2) + 1
-  captureRegion.x = cursorPos.x - halfW
-  captureRegion.y = cursorPos.y - halfH
-  nativeCapture.setRegion(captureRegion.x, captureRegion.y, halfW * 2, halfH * 2)
+  const x = cursorPos.x - halfW
+  const y = cursorPos.y - halfH
+  sendToRenderer('capture-region', { x, y, w: halfW * 2, h: halfH * 2 })
 }
 
 function startMouseTracking() {
@@ -1035,39 +1032,16 @@ app.whenReady().then(async () => {
     startActiveWindowTracking()
   }
 
-  // Start native Linux capture (PipeWire or XShm) — non-blocking
-  // The PipeWire backend may block briefly waiting for D-Bus signals,
-  // so we defer to avoid freezing the main process during startup.
+  // Send initial capture config to the renderer (preload manages the addon)
   if (IS_LINUX) {
-    setTimeout(() => {
-      nativeCapture = createCapture()
-      // Send frames directly from the C callback — the addon handles
-      // precise rate limiting. Renderer drops frames it can't handle.
-      nativeCapture.onFrame((buffer, width, height) => {
-        sendToRenderer('native-frame', {
-          buffer: Buffer.from(new Uint8Array(buffer)),
-          width, height,
-          regionX: captureRegion.x,
-          regionY: captureRegion.y,
-        })
-      })
-      const ret = nativeCapture.start()
-      if (ret === 0) {
-        nativeCapture.setRate(Math.round(100 / CONFIG.refreshInterval))
-        // Set initial region around screen center to avoid huge full-screen frames
-        const primaryDisplay = screen.getPrimaryDisplay()
-        const { width: screenW, height: screenH } = primaryDisplay.size
-        const [winW, winH] = MAIN_WINDOW.getSize()
-        const halfW = Math.ceil(winW / CONFIG.zoomLevel / 2) + 1
-        const halfH = Math.ceil(winH / CONFIG.zoomLevel / 2) + 1
-        captureRegion.x = Math.floor(screenW / 2) - halfW
-        captureRegion.y = Math.floor(screenH / 2) - halfH
-        nativeCapture.setRegion(captureRegion.x, captureRegion.y, halfW * 2, halfH * 2)
-      } else {
-        console.log('Native capture failed, renderer will use desktopCapturer')
-        nativeCapture = null
-      }
-    }, 0)
+    const primaryDisplay = screen.getPrimaryDisplay()
+    const { width: screenW, height: screenH } = primaryDisplay.size
+    cursorPos.x = Math.floor(screenW / 2)
+    cursorPos.y = Math.floor(screenH / 2)
+    MAIN_WINDOW.webContents.once('did-finish-load', () => {
+      sendToRenderer('capture-rate', Math.round(100 / CONFIG.refreshInterval))
+      updateCaptureRegion()
+    })
   }
 
   // Apply CLI window position/size
@@ -1107,8 +1081,6 @@ app.on('window-all-closed', () => {
 
 app.on('before-quit', () => {
   stopActiveWindowTracking()
-  try { if (nativeCapture) nativeCapture.stop() } catch {}
-  nativeCapture = null
   try { uIOhook.stop() } catch {}
   // Force exit after cleanup in case something still blocks
   setTimeout(() => process.exit(0), 500)

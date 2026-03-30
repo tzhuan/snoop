@@ -346,8 +346,8 @@ static void on_stream_process(void *userdata) {
             int rw = state->region_w;
             int rh = state->region_h;
 
-            if (rx < 0) rx = 0;
-            if (ry < 0) ry = 0;
+            if (rx < 0) { rw += rx; rx = 0; }
+            if (ry < 0) { rh += ry; ry = 0; }
             if (rx + rw > width) rw = width - rx;
             if (ry + rh > height) rh = height - ry;
 
