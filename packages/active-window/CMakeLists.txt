@@ -15,9 +15,10 @@ if(UNIX AND NOT APPLE)
     target_include_directories(${PROJECT_NAME} PRIVATE ${X11_INCLUDE_DIR})
     target_link_libraries(${PROJECT_NAME} ${X11_LIBRARIES})
 elseif(WIN32)
-    # Phase 5: target_sources(${PROJECT_NAME} PRIVATE src/windows.c)
+    target_sources(${PROJECT_NAME} PRIVATE src/win32.c)
 elseif(APPLE)
-    # Phase 5: target_sources(${PROJECT_NAME} PRIVATE src/darwin.c)
+    target_sources(${PROJECT_NAME} PRIVATE src/darwin.c)
+    target_link_libraries(${PROJECT_NAME} "-framework CoreGraphics")
 endif()
 
 # N-API setup

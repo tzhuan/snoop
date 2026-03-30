@@ -34,6 +34,7 @@ struct CaptureState {
     struct spa_hook stream_listener;
     int stream_width;
     int stream_height;
+    enum spa_video_format stream_format;
 
     /* Threading */
     pthread_t thread;
@@ -96,11 +97,29 @@ static DBusMessage *dbus_call_sync(DBusConnection *conn,
 /* ---------- D-Bus: Mutter ScreenCast session setup ---------- */
 
 static int dbus_create_session(CaptureState *state) {
-    DBusMessage *reply = dbus_call_sync(
-        state->dbus,
+    /* CreateSession(properties: a{sv}) -> (session_path: o) */
+    DBusMessage *msg = dbus_message_new_method_call(
         MUTTER_SCREENCAST_BUS, MUTTER_SCREENCAST_PATH,
-        MUTTER_SCREENCAST_IFACE, "CreateSession",
-        DBUS_TYPE_INVALID);
+        MUTTER_SCREENCAST_IFACE, "CreateSession");
+    if (!msg) return -1;
+
+    /* Append empty a{sv} properties dict */
+    DBusMessageIter iter, dict_iter;
+    dbus_message_iter_init_append(msg, &iter);
+    dbus_message_iter_open_container(&iter, DBUS_TYPE_ARRAY, "{sv}", &dict_iter);
+    dbus_message_iter_close_container(&iter, &dict_iter);
+
+    DBusError err;
+    dbus_error_init(&err);
+    DBusMessage *reply = dbus_connection_send_with_reply_and_block(
+        state->dbus, msg, 5000, &err);
+    dbus_message_unref(msg);
+
+    if (dbus_error_is_set(&err)) {
+        fprintf(stderr, "CreateSession failed: %s\n", err.message);
+        dbus_error_free(&err);
+        return -1;
+    }
     if (!reply) return -1;
 
     const char *session_path = NULL;
@@ -124,10 +143,22 @@ static int dbus_record_monitor(CaptureState *state) {
 
     /* Empty connector string = primary monitor */
     const char *connector = "";
-    DBusMessageIter iter, dict_iter;
+    DBusMessageIter iter, dict_iter, entry_iter, variant_iter;
     dbus_message_iter_init_append(msg, &iter);
     dbus_message_iter_append_basic(&iter, DBUS_TYPE_STRING, &connector);
+
+    /* Properties dict: cursor-mode = 0 (hidden) */
     dbus_message_iter_open_container(&iter, DBUS_TYPE_ARRAY, "{sv}", &dict_iter);
+    {
+        const char *key = "cursor-mode";
+        uint32_t cursor_mode = 0; /* 0=Hidden, 1=Embedded, 2=Metadata */
+        dbus_message_iter_open_container(&dict_iter, DBUS_TYPE_DICT_ENTRY, NULL, &entry_iter);
+        dbus_message_iter_append_basic(&entry_iter, DBUS_TYPE_STRING, &key);
+        dbus_message_iter_open_container(&entry_iter, DBUS_TYPE_VARIANT, "u", &variant_iter);
+        dbus_message_iter_append_basic(&variant_iter, DBUS_TYPE_UINT32, &cursor_mode);
+        dbus_message_iter_close_container(&entry_iter, &variant_iter);
+        dbus_message_iter_close_container(&dict_iter, &entry_iter);
+    }
     dbus_message_iter_close_container(&iter, &dict_iter);
 
     DBusError err;
@@ -154,56 +185,68 @@ static int dbus_record_monitor(CaptureState *state) {
     return 0;
 }
 
-static int dbus_get_pipewire_node_id(CaptureState *state) {
-    /* Read the PipeWireStreamAdded signal or the stream's PipeWireNodeId property */
-    DBusMessage *msg = dbus_message_new_method_call(
-        MUTTER_SCREENCAST_BUS, state->stream_path,
-        "org.freedesktop.DBus.Properties", "Get");
-    if (!msg) return -1;
-
-    const char *iface = MUTTER_STREAM_IFACE;
-    const char *prop = "PipeWireNodeId";
-    dbus_message_append_args(msg,
-                             DBUS_TYPE_STRING, &iface,
-                             DBUS_TYPE_STRING, &prop,
-                             DBUS_TYPE_INVALID);
+static int dbus_start_and_get_node_id(CaptureState *state) {
+    /*
+     * Subscribe to PipeWireStreamAdded signal on the STREAM object.
+     * Use a broad match (no sender filter) to avoid missing it.
+     */
+    char match_rule[512];
+    snprintf(match_rule, sizeof(match_rule),
+        "type='signal',interface='%s',member='PipeWireStreamAdded',path='%s'",
+        MUTTER_STREAM_IFACE, state->stream_path);
 
     DBusError err;
     dbus_error_init(&err);
-    DBusMessage *reply = dbus_connection_send_with_reply_and_block(
-        state->dbus, msg, 5000, &err);
-    dbus_message_unref(msg);
-
+    dbus_bus_add_match(state->dbus, match_rule, &err);
     if (dbus_error_is_set(&err)) {
-        fprintf(stderr, "Get PipeWireNodeId failed: %s\n", err.message);
+        fprintf(stderr, "capture: add_match failed: %s\n", err.message);
         dbus_error_free(&err);
         return -1;
     }
+    dbus_connection_flush(state->dbus);
 
-    DBusMessageIter iter, variant_iter;
-    dbus_message_iter_init(reply, &iter);
-    if (dbus_message_iter_get_arg_type(&iter) != DBUS_TYPE_VARIANT) {
-        dbus_message_unref(reply);
-        return -1;
-    }
-    dbus_message_iter_recurse(&iter, &variant_iter);
-    if (dbus_message_iter_get_arg_type(&variant_iter) != DBUS_TYPE_UINT32) {
-        dbus_message_unref(reply);
-        return -1;
-    }
-    dbus_message_iter_get_basic(&variant_iter, &state->pipewire_node_id);
-    dbus_message_unref(reply);
-    return 0;
-}
-
-static int dbus_start_session(CaptureState *state) {
-    DBusMessage *reply = dbus_call_sync(
-        state->dbus,
+    /*
+     * Send Start as a non-blocking call so we don't consume the signal
+     * inside dbus_connection_send_with_reply_and_block.
+     */
+    DBusMessage *start_msg = dbus_message_new_method_call(
         MUTTER_SCREENCAST_BUS, state->session_path,
-        MUTTER_SESSION_IFACE, "Start",
-        DBUS_TYPE_INVALID);
-    if (!reply) return -1;
-    dbus_message_unref(reply);
+        MUTTER_SESSION_IFACE, "Start");
+    if (!start_msg) return -1;
+
+    dbus_connection_send(state->dbus, start_msg, NULL);
+    dbus_connection_flush(state->dbus);
+    dbus_message_unref(start_msg);
+
+    /* Pump the connection for the signal and the Start reply (up to 3 seconds) */
+    int64_t deadline = get_time_ns() + 3000000000LL;
+    int got_node_id = 0;
+
+    while (get_time_ns() < deadline) {
+        dbus_connection_read_write(state->dbus, 100);
+        DBusMessage *msg;
+        while ((msg = dbus_connection_pop_message(state->dbus)) != NULL) {
+            if (dbus_message_is_signal(msg, MUTTER_STREAM_IFACE, "PipeWireStreamAdded")) {
+                uint32_t node_id = 0;
+                if (dbus_message_get_args(msg, NULL,
+                                           DBUS_TYPE_UINT32, &node_id,
+                                           DBUS_TYPE_INVALID)) {
+                    state->pipewire_node_id = node_id;
+                    got_node_id = 1;
+                }
+            }
+            dbus_message_unref(msg);
+            if (got_node_id) break;
+        }
+        if (got_node_id) break;
+    }
+
+    dbus_bus_remove_match(state->dbus, match_rule, NULL);
+
+    if (!got_node_id) {
+        fprintf(stderr, "capture: timed out waiting for PipeWireStreamAdded\n");
+        return -1;
+    }
     return 0;
 }
 
@@ -229,8 +272,9 @@ static void on_stream_param_changed(void *userdata, uint32_t id,
 
     state->stream_width = info.size.width;
     state->stream_height = info.size.height;
-    fprintf(stderr, "capture: stream format %dx%d\n",
-            state->stream_width, state->stream_height);
+    state->stream_format = info.format;
+    fprintf(stderr, "capture: stream format %dx%d fmt=%d\n",
+            state->stream_width, state->stream_height, info.format);
 
     /* Set buffer requirements */
     uint8_t buf[1024];
@@ -276,7 +320,25 @@ static void on_stream_process(void *userdata) {
     }
     state->snap_requested = 0;
 
-    /* Region crop */
+    /* Determine if we need BGRA→RGBA conversion */
+    int need_swap = (state->stream_format == SPA_VIDEO_FORMAT_BGRA ||
+                     state->stream_format == SPA_VIDEO_FORMAT_BGRx);
+
+    /* Copy a row, optionally swapping B and R channels */
+    #define COPY_ROW(dst, src, pixels) do { \
+        if (need_swap) { \
+            for (int _i = 0; _i < (pixels); _i++) { \
+                (dst)[_i*4+0] = (src)[_i*4+2]; \
+                (dst)[_i*4+1] = (src)[_i*4+1]; \
+                (dst)[_i*4+2] = (src)[_i*4+0]; \
+                (dst)[_i*4+3] = 255;           \
+            } \
+        } else { \
+            memcpy((dst), (src), (pixels) * 4); \
+        } \
+    } while(0)
+
+    /* Region crop + format conversion */
     if (state->callback) {
         if (state->has_region) {
             int rx = state->region_x;
@@ -284,36 +346,59 @@ static void on_stream_process(void *userdata) {
             int rw = state->region_w;
             int rh = state->region_h;
 
-            /* Clamp to frame bounds */
             if (rx < 0) rx = 0;
             if (ry < 0) ry = 0;
             if (rx + rw > width) rw = width - rx;
             if (ry + rh > height) rh = height - ry;
 
             if (rw > 0 && rh > 0) {
-                /* Allocate cropped buffer (RGBA = 4 bytes per pixel) */
                 int crop_stride = rw * 4;
                 uint8_t *crop = malloc(crop_stride * rh);
                 if (crop) {
                     for (int row = 0; row < rh; row++) {
-                        memcpy(crop + row * crop_stride,
-                               data + (ry + row) * stride + rx * 4,
-                               crop_stride);
+                        COPY_ROW(crop + row * crop_stride,
+                                 data + (ry + row) * stride + rx * 4,
+                                 rw);
                     }
                     state->callback(state->userdata, crop, rw, rh, crop_stride);
                     free(crop);
                 }
             }
         } else {
-            state->callback(state->userdata, data, width, height, stride);
+            if (need_swap) {
+                int out_stride = width * 4;
+                uint8_t *rgba = malloc(out_stride * height);
+                if (rgba) {
+                    for (int row = 0; row < height; row++) {
+                        COPY_ROW(rgba + row * out_stride,
+                                 data + row * stride, width);
+                    }
+                    state->callback(state->userdata, rgba, width, height, out_stride);
+                    free(rgba);
+                }
+            } else {
+                state->callback(state->userdata, data, width, height, stride);
+            }
         }
     }
+    #undef COPY_ROW
 
     pw_stream_queue_buffer(state->pw_stream, pw_buf);
 }
 
+static void on_stream_state_changed(void *userdata, enum pw_stream_state old,
+                                    enum pw_stream_state state, const char *error) {
+    (void)userdata;
+    fprintf(stderr, "capture: PipeWire stream state: %s -> %s%s%s\n",
+            pw_stream_state_as_string(old),
+            pw_stream_state_as_string(state),
+            error ? " error: " : "",
+            error ? error : "");
+}
+
 static const struct pw_stream_events stream_events = {
     PW_VERSION_STREAM_EVENTS,
+    .state_changed = on_stream_state_changed,
     .param_changed = on_stream_param_changed,
     .process = on_stream_process,
 };
@@ -353,8 +438,7 @@ int capture_start(CaptureState *state, frame_callback_t cb, void *userdata) {
     /* Mutter ScreenCast session */
     if (dbus_create_session(state) < 0) return -1;
     if (dbus_record_monitor(state) < 0) return -1;
-    if (dbus_start_session(state) < 0) return -1;
-    if (dbus_get_pipewire_node_id(state) < 0) return -1;
+    if (dbus_start_and_get_node_id(state) < 0) return -1;
 
     fprintf(stderr, "capture: PipeWire node ID = %u\n", state->pipewire_node_id);
 
@@ -384,7 +468,7 @@ int capture_start(CaptureState *state, frame_callback_t cb, void *userdata) {
     pw_stream_add_listener(state->pw_stream, &state->stream_listener,
                            &stream_events, state);
 
-    /* Negotiate RGBA format */
+    /* Negotiate video format — accept RGBA, BGRA, BGRx */
     uint8_t buf[1024];
     struct spa_pod_builder b = SPA_POD_BUILDER_INIT(buf, sizeof(buf));
     const struct spa_pod *params[1];
@@ -392,7 +476,11 @@ int capture_start(CaptureState *state, frame_callback_t cb, void *userdata) {
         SPA_TYPE_OBJECT_Format, SPA_PARAM_EnumFormat,
         SPA_FORMAT_mediaType, SPA_POD_Id(SPA_MEDIA_TYPE_video),
         SPA_FORMAT_mediaSubtype, SPA_POD_Id(SPA_MEDIA_SUBTYPE_raw),
-        SPA_FORMAT_VIDEO_format, SPA_POD_Id(SPA_VIDEO_FORMAT_RGBA),
+        SPA_FORMAT_VIDEO_format, SPA_POD_CHOICE_ENUM_Id(4,
+            SPA_VIDEO_FORMAT_RGBA,
+            SPA_VIDEO_FORMAT_RGBA,
+            SPA_VIDEO_FORMAT_BGRA,
+            SPA_VIDEO_FORMAT_BGRx),
         SPA_FORMAT_VIDEO_size, SPA_POD_CHOICE_RANGE_Rectangle(
             &SPA_RECTANGLE(1920, 1080),
             &SPA_RECTANGLE(1, 1),
