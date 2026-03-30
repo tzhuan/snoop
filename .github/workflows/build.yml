@@ -41,26 +41,38 @@ jobs:
           node-version: 24
           cache: npm
 
-      # Build tools needed for Linux package formats
+      # Linux: cmake, native addon deps, and packaging tools
       - name: Install Linux build dependencies
         if: startsWith(matrix.platform, 'linux')
         run: |
           sudo apt-get update
-          sudo apt-get install -y rpm elfutils \
-            libx11-dev libxtst-dev libxt-dev libxrandr-dev libxinerama-dev
-          echo '%__strip /bin/true' >> ~/.rpmmacros
+          sudo apt-get install -y cmake rpm elfutils \
+            libx11-dev libxext-dev libxtst-dev libxt-dev libxrandr-dev libxinerama-dev \
+            libpipewire-0.3-dev libdbus-1-dev
 
       - name: Install dependencies
         run: npm ci
 
+      # Build native addons with cmake-js
+      - name: Build @snoop/active-window
+        run: npx cmake-js compile -d packages/active-window
+
+      - name: Build @snoop/capture
+        run: npx cmake-js compile -d packages/capture
+
+      # Rebuild native addons for Electron's Node version
+      - name: Rebuild native addons for Electron
+        run: npx electron-rebuild -w @snoop/active-window @snoop/capture
+        working-directory: app
+
       - name: Build (make)
-        run: npm run make
+        run: npm run make -w app
 
       - name: Collect distributable files
         shell: bash
         run: |
           mkdir -p dist
-          find out/make -type f \( -name '*.zip' -o -name '*.dmg' -o -name '*.deb' -o -name '*.rpm' -o -name '*.AppImage' \) -exec cp {} dist/ \;
+          find app/out/make -type f \( -name '*.zip' -o -name '*.dmg' -o -name '*.deb' -o -name '*.rpm' -o -name '*.AppImage' \) -exec cp {} dist/ \;
           ls -la dist/
 
       - name: Upload artifacts
