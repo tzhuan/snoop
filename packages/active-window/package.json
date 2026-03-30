@@ -1,0 +1,8 @@
+{
+  "name": "@snoop/active-window",
+  "version": "0.0.1",
+  "description": "Cross-platform active window tracking",
+  "main": "index.js",
+  "type": "module",
+  "license": "BSD-3-Clause"
+}

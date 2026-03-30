@@ -1,0 +1,8 @@
+{
+  "name": "@snoop/capture",
+  "version": "0.0.1",
+  "description": "Cross-platform screen capture via native APIs",
+  "main": "index.js",
+  "type": "module",
+  "license": "BSD-3-Clause"
+}
