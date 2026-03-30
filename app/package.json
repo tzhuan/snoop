@@ -21,7 +21,6 @@
   },
   "license": "BSD-3-Clause",
   "dependencies": {
-    "active-win": "^9.0.0",
     "@snoop/active-window": "*",
     "@snoop/capture": "*",
     "uiohook-napi": "^1.5.5"

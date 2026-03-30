@@ -7,6 +7,10 @@ const STATUS_TEXT = document.getElementById('status-text')
 
 const CONFIG = structuredClone(DEFAULT_CONFIG)
 
+// Capture mode: 'video' (desktopCapturer/getDisplayMedia) or 'native' (PipeWire addon)
+let CAPTURE_MODE = 'video'
+let NATIVE_FRAME = null
+
 // Runtime state (not persisted)
 const RUNTIME = {
   cursorX: 0,
@@ -66,8 +70,20 @@ PIXEL_WORKER.onmessage = function(e) {
 }
 
 async function initCapture() {
-  // Try desktopCapturer (works on X11, macOS, Windows)
   const sources = await window.snoop.getSources()
+
+  // Native PipeWire capture mode (Wayland)
+  if (sources.length > 0 && sources[0].id === '__native__') {
+    CAPTURE_MODE = 'native'
+    window.snoop.onNativeFrame((data) => {
+      const { buffer, width, height } = data
+      NATIVE_FRAME = { buffer, width, height }
+    })
+    return
+  }
+
+  // Try desktopCapturer (works on X11, macOS, Windows)
+  CAPTURE_MODE = 'video'
   if (sources.length > 0) {
     try {
       RUNTIME.stream = await navigator.mediaDevices.getUserMedia({
@@ -87,7 +103,7 @@ async function initCapture() {
     }
   }
 
-  // Fallback to getDisplayMedia (needed on Wayland via PipeWire portal)
+  // Fallback to getDisplayMedia
   try {
     RUNTIME.stream = await navigator.mediaDevices.getDisplayMedia({
       audio: false,
@@ -116,16 +132,28 @@ function needsWorkerProcessing() {
 }
 
 function renderFrame() {
-  if (VIDEO.readyState < VIDEO.HAVE_CURRENT_DATA) return
+  if (CAPTURE_MODE === 'native') {
+    if (!NATIVE_FRAME) return
+
+    const { buffer, width, height } = NATIVE_FRAME
+    OFFSCREEN.width = width
+    OFFSCREEN.height = height
+    const pixels = new Uint8ClampedArray(buffer)
+    const imageData = new ImageData(pixels, width, height)
+    OFF_CTX.putImageData(imageData, 0, 0)
+    NATIVE_FRAME = null
+  } else {
+    if (VIDEO.readyState < VIDEO.HAVE_CURRENT_DATA) return
+
+    OFFSCREEN.width = VIDEO.videoWidth
+    OFFSCREEN.height = VIDEO.videoHeight
+    OFF_CTX.drawImage(VIDEO, 0, 0)
+  }
 
   const useWorker = needsWorkerProcessing()
 
   // Skip the entire frame if worker is still busy
   if (useWorker && RUNTIME.workerBusy) return
-
-  OFFSCREEN.width = VIDEO.videoWidth
-  OFFSCREEN.height = VIDEO.videoHeight
-  OFF_CTX.drawImage(VIDEO, 0, 0)
 
   const rs = rulerSize()
   const vpX = rs
@@ -566,7 +594,7 @@ function drawStatisticsOverlay(showText, stats) {
 }
 
 function formatCoord(n) {
-  return String(n).padStart(5, '0')
+  return String(n).padStart(6, ' ')
 }
 
 function formatRgb(pixel) {

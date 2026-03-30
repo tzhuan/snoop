@@ -2,19 +2,23 @@ import { app, BrowserWindow, clipboard, desktopCapturer, dialog, ipcMain, Menu, 
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { uIOhook, UiohookKey } from 'uiohook-napi'
+import { getActiveWindow as nativeGetActiveWindow } from '@snoop/active-window'
+import { createCapture } from '@snoop/capture'
 import pkg from '../package.json' with { type: 'json' }
 import { DEFAULT_CONFIG } from './config-defaults.js'
 
 const __filename = fileURLToPath(import.meta.url)
 const __dirname = path.dirname(__filename)
 
-// Active window tracking only supported on macOS and Windows (native API via active-win)
-const SUPPORTS_ACTIVE_WINDOW = process.platform === 'darwin' || process.platform === 'win32'
 const IS_X11 = process.env.XDG_SESSION_TYPE === 'x11'
+const IS_WAYLAND = process.env.XDG_SESSION_TYPE === 'wayland'
+// Active window tracking: macOS, Windows, and Linux X11 (via native addon)
+const SUPPORTS_ACTIVE_WINDOW = process.platform === 'darwin' || process.platform === 'win32' || IS_X11
 const HAS_CURSOR_IN_CAPTURE = IS_X11 || process.platform === 'win32'
 
 
 let MAIN_WINDOW
+let nativeCapture = null
 
 const CONFIG = structuredClone(DEFAULT_CONFIG)
 
@@ -98,16 +102,18 @@ const createWindow = () => {
 
   MAIN_WINDOW.loadFile(path.join(__dirname, 'index.html'))
 
-  // Allow getDisplayMedia (needed for Wayland PipeWire portal)
-  MAIN_WINDOW.webContents.session.setDisplayMediaRequestHandler((_request, callback) => {
-    desktopCapturer.getSources({ types: ['screen'] }).then((sources) => {
-      if (sources.length > 0) {
-        callback({ video: sources[0] })
-      } else {
-        callback({})
-      }
+  if (!IS_WAYLAND) {
+    // Allow getDisplayMedia (needed for non-Wayland fallback paths)
+    MAIN_WINDOW.webContents.session.setDisplayMediaRequestHandler((_request, callback) => {
+      desktopCapturer.getSources({ types: ['screen'] }).then((sources) => {
+        if (sources.length > 0) {
+          callback({ video: sources[0] })
+        } else {
+          callback({})
+        }
+      })
     })
-  })
+  }
 
   // Prevent title from being overwritten by <title> tag
   MAIN_WINDOW.on('page-title-updated', (e) => e.preventDefault())
@@ -116,6 +122,14 @@ const createWindow = () => {
     if (CONFIG.autoSaveConfig) {
       saveConfig()
     }
+  })
+
+  MAIN_WINDOW.on('minimize', () => {
+    if (nativeCapture) nativeCapture.suspend()
+  })
+
+  MAIN_WINDOW.on('restore', () => {
+    if (nativeCapture) nativeCapture.resume()
   })
 
   MAIN_WINDOW.on('closed', () => {
@@ -625,6 +639,10 @@ let spaceHeld = false
 
 // Provide desktop capturer sources to renderer
 ipcMain.handle('get-sources', async () => {
+  if (IS_WAYLAND) {
+    // On Wayland, signal the renderer to use native capture mode
+    return [{ id: '__native__', name: 'Native PipeWire Capture' }]
+  }
   const sources = await desktopCapturer.getSources({ types: ['screen'] })
   return sources.map((s) => ({ id: s.id, name: s.name }))
 })
@@ -660,17 +678,13 @@ ipcMain.on('dialog-cancel', (event) => {
 
 let activeWindowTrackerId = null
 
-async function getActiveWindowPos() {
+function getActiveWindowPos() {
   if (!MAIN_WINDOW || MAIN_WINDOW.isDestroyed()) return
   try {
-    const { activeWindow } = await import('active-win')
-    const win = await activeWindow()
-    if (win && win.bounds) {
+    const win = nativeGetActiveWindow()
+    if (win) {
       sendToRenderer('active-window-pos', {
-        x: win.bounds.x,
-        y: win.bounds.y,
-        width: win.bounds.width,
-        height: win.bounds.height,
+        x: win.x, y: win.y, width: win.width, height: win.height,
       })
     }
   } catch {
@@ -699,6 +713,19 @@ function startMouseTracking() {
   uIOhook.on('mousemove', (e) => {
     if (MAIN_WINDOW && !MAIN_WINDOW.isDestroyed()) {
       MAIN_WINDOW.webContents.send('cursor-position', { x: e.x, y: e.y })
+
+      // Update native capture region around cursor for efficient cropping
+      if (nativeCapture) {
+        const [winW, winH] = MAIN_WINDOW.getSize()
+        const halfW = Math.ceil(winW / CONFIG.zoomLevel / 2) + 1
+        const halfH = Math.ceil(winH / CONFIG.zoomLevel / 2) + 1
+        nativeCapture.setRegion(
+          e.x + CONFIG.focusOffsetX - halfW,
+          e.y + CONFIG.focusOffsetY - halfH,
+          halfW * 2,
+          halfH * 2
+        )
+      }
     }
   })
 
@@ -984,6 +1011,15 @@ app.whenReady().then(async () => {
     startActiveWindowTracking()
   }
 
+  // Start native Wayland capture
+  if (IS_WAYLAND) {
+    nativeCapture = createCapture()
+    nativeCapture.onFrame((buffer, width, height) => {
+      sendToRenderer('native-frame', { buffer: Buffer.from(buffer), width, height })
+    })
+    nativeCapture.start()
+  }
+
   // Apply CLI window position/size
   if (CONFIG._windowPos) {
     MAIN_WINDOW.setPosition(CONFIG._windowPos.x, CONFIG._windowPos.y)
@@ -1021,5 +1057,9 @@ app.on('window-all-closed', () => {
 
 app.on('will-quit', () => {
   stopActiveWindowTracking()
+  if (nativeCapture) {
+    nativeCapture.stop()
+    nativeCapture = null
+  }
   uIOhook.stop()
 })
