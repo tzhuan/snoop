@@ -8,8 +8,6 @@ export const DEFAULT_CONFIG = {
   coordMode: 'screen', // 'screen' | 'window'
   inverseY: false,
   boundMode: false,
-  focusOffsetX: 0,
-  focusOffsetY: 0,
   currentFilter: 'none', // 'none' | 'gradient'
   currentGraph: 'off', // 'off' | 'hstep' | 'hlinear' | 'vstep' | 'vlinear' | 'statistics'
   graphHighlight: false,

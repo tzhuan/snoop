@@ -24,6 +24,8 @@ const RUNTIME = {
   workerFrameId: 0,
   pendingFrame: null,
   refreshTimerId: null,
+  nativeRegionX: 0,
+  nativeRegionY: 0,
 }
 
 const RULER_SIZE = 12
@@ -32,7 +34,7 @@ function rulerSize() { return CONFIG.showRuler ? RULER_SIZE : 0 }
 
 // Hidden canvas for capturing full-resolution screen frames
 const OFFSCREEN = document.createElement('canvas')
-const OFF_CTX = OFFSCREEN.getContext('2d')
+const OFF_CTX = OFFSCREEN.getContext('2d', { willReadFrequently: true })
 
 // Buffer canvas for worker pipeline (avoids flashing unprocessed frames)
 const BUFFER = document.createElement('canvas')
@@ -70,19 +72,20 @@ PIXEL_WORKER.onmessage = function(e) {
 }
 
 async function initCapture() {
+  // Receive native frames and ACK to allow next frame
+  window.snoop.onNativeFrame((data) => {
+    NATIVE_FRAME = data
+  })
+
   const sources = await window.snoop.getSources()
 
-  // Native PipeWire capture mode (Wayland)
+  // Native capture mode (Linux)
   if (sources.length > 0 && sources[0].id === '__native__') {
     CAPTURE_MODE = 'native'
-    window.snoop.onNativeFrame((data) => {
-      const { buffer, width, height } = data
-      NATIVE_FRAME = { buffer, width, height }
-    })
     return
   }
 
-  // Try desktopCapturer (works on X11, macOS, Windows)
+  // Video capture (macOS, Windows)
   CAPTURE_MODE = 'video'
   if (sources.length > 0) {
     try {
@@ -99,7 +102,7 @@ async function initCapture() {
       VIDEO.srcObject = RUNTIME.stream
       return
     } catch (err) {
-      console.warn('desktopCapturer failed, trying getDisplayMedia:', err)
+      console.debug('desktopCapturer getUserMedia unavailable, trying getDisplayMedia')
     }
   }
 
@@ -111,7 +114,7 @@ async function initCapture() {
     })
     VIDEO.srcObject = RUNTIME.stream
   } catch (err) {
-    console.error('Failed to capture screen:', err)
+    console.warn('getDisplayMedia not available:', err.message)
   }
 }
 
@@ -135,12 +138,18 @@ function renderFrame() {
   if (CAPTURE_MODE === 'native') {
     if (!NATIVE_FRAME) return
 
-    const { buffer, width, height } = NATIVE_FRAME
-    OFFSCREEN.width = width
-    OFFSCREEN.height = height
-    const pixels = new Uint8ClampedArray(buffer)
-    const imageData = new ImageData(pixels, width, height)
-    OFF_CTX.putImageData(imageData, 0, 0)
+    try {
+      const { buffer, width, height, regionX, regionY } = NATIVE_FRAME
+      OFFSCREEN.width = width
+      OFFSCREEN.height = height
+      RUNTIME.nativeRegionX = regionX || 0
+      RUNTIME.nativeRegionY = regionY || 0
+      const pixels = new Uint8ClampedArray(buffer)
+      const imageData = new ImageData(pixels, width, height)
+      OFF_CTX.putImageData(imageData, 0, 0)
+    } catch (err) {
+      console.error('native renderFrame error:', err)
+    }
     NATIVE_FRAME = null
   } else {
     if (VIDEO.readyState < VIDEO.HAVE_CURRENT_DATA) return
@@ -164,8 +173,12 @@ function renderFrame() {
   const srcW = vpW / CONFIG.zoomLevel
   const srcH = vpH / CONFIG.zoomLevel
 
-  let centerX = RUNTIME.cursorX + CONFIG.focusOffsetX
-  let centerY = RUNTIME.cursorY + CONFIG.focusOffsetY
+  // In native capture mode, OFFSCREEN contains a cropped region starting at (regionX, regionY).
+  // Map screen-space cursor coordinates to OFFSCREEN-local coordinates.
+  const regionOffsetX = CAPTURE_MODE === 'native' ? (RUNTIME.nativeRegionX || 0) : 0
+  const regionOffsetY = CAPTURE_MODE === 'native' ? (RUNTIME.nativeRegionY || 0) : 0
+  let centerX = RUNTIME.cursorX - regionOffsetX
+  let centerY = RUNTIME.cursorY - regionOffsetY
   if (CONFIG.boundMode && OFFSCREEN.width > 0 && OFFSCREEN.height > 0) {
     centerX = Math.max(srcW / 2, Math.min(OFFSCREEN.width - srcW / 2, centerX))
     centerY = Math.max(srcH / 2, Math.min(OFFSCREEN.height - srcH / 2, centerY))
@@ -629,8 +642,12 @@ function updateStatusBar() {
 
   let rgb = '(000,000,000)'
   if (OFFSCREEN.width > 0 && OFFSCREEN.height > 0) {
-    const px = Math.floor(RUNTIME.cursorX)
-    const py = Math.floor(RUNTIME.cursorY)
+    let px = Math.floor(RUNTIME.cursorX)
+    let py = Math.floor(RUNTIME.cursorY)
+    if (CAPTURE_MODE === 'native') {
+      px -= RUNTIME.nativeRegionX || 0
+      py -= RUNTIME.nativeRegionY || 0
+    }
     if (px >= 0 && px < OFFSCREEN.width && py >= 0 && py < OFFSCREEN.height) {
       const pixel = OFF_CTX.getImageData(px, py, 1, 1).data
       rgb = formatRgb(pixel)
@@ -752,8 +769,8 @@ function updateTrackPosition(e) {
   const vpH = CANVAS.height - rs
   const srcW = vpW / CONFIG.zoomLevel
   const srcH = vpH / CONFIG.zoomLevel
-  const centerX = RUNTIME.cursorX + CONFIG.focusOffsetX
-  const centerY = RUNTIME.cursorY + CONFIG.focusOffsetY
+  const centerX = RUNTIME.cursorX
+  const centerY = RUNTIME.cursorY
   const srcX = centerX - srcW / 2
   const srcY = centerY - srcH / 2
   RUNTIME.cursorX = Math.floor(srcX + (e.offsetX - rs) / CONFIG.zoomLevel)

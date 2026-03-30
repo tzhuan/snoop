@@ -10,15 +10,17 @@ import { DEFAULT_CONFIG } from './config-defaults.js'
 const __filename = fileURLToPath(import.meta.url)
 const __dirname = path.dirname(__filename)
 
+const IS_LINUX = process.platform === 'linux'
 const IS_X11 = process.env.XDG_SESSION_TYPE === 'x11'
 const IS_WAYLAND = process.env.XDG_SESSION_TYPE === 'wayland'
 // Active window tracking: macOS, Windows, and Linux X11 (via native addon)
 const SUPPORTS_ACTIVE_WINDOW = process.platform === 'darwin' || process.platform === 'win32' || IS_X11
-const HAS_CURSOR_IN_CAPTURE = IS_X11 || process.platform === 'win32'
 
 
 let MAIN_WINDOW
 let nativeCapture = null
+let captureRegion = { x: 0, y: 0 }
+let cursorPos = { x: 0, y: 0 } // Logical cursor position (mouse or arrow mode)
 
 const CONFIG = structuredClone(DEFAULT_CONFIG)
 
@@ -102,8 +104,8 @@ const createWindow = () => {
 
   MAIN_WINDOW.loadFile(path.join(__dirname, 'index.html'))
 
-  if (!IS_WAYLAND) {
-    // Allow getDisplayMedia (needed for non-Wayland fallback paths)
+  if (!IS_LINUX) {
+    // Allow getDisplayMedia (macOS/Windows)
     MAIN_WINDOW.webContents.session.setDisplayMediaRequestHandler((_request, callback) => {
       desktopCapturer.getSources({ types: ['screen'] }).then((sources) => {
         if (sources.length > 0) {
@@ -637,11 +639,12 @@ const arrowKeyMap = {
 
 let spaceHeld = false
 
+
 // Provide desktop capturer sources to renderer
 ipcMain.handle('get-sources', async () => {
-  if (IS_WAYLAND) {
-    // On Wayland, signal the renderer to use native capture mode
-    return [{ id: '__native__', name: 'Native PipeWire Capture' }]
+  if (IS_LINUX) {
+    // On Linux, always use native capture — skip desktopCapturer to avoid X11 connection exhaustion
+    return [{ id: '__native__', name: 'Native Capture' }]
   }
   const sources = await desktopCapturer.getSources({ types: ['screen'] })
   return sources.map((s) => ({ id: s.id, name: s.name }))
@@ -667,6 +670,9 @@ ipcMain.on('dialog-submit', (event, data) => {
   // Refresh rate dialog
   CONFIG.refreshEnabled = data.enabled
   CONFIG.refreshInterval = Math.max(1, data.interval)
+  if (nativeCapture) {
+    nativeCapture.setRate(Math.round(100 / CONFIG.refreshInterval))
+  }
   sendConfigToRenderer()
   if (win) win.close()
 })
@@ -709,22 +715,25 @@ function sendScreenInfo() {
   sendToRenderer('screen-info', { width, height })
 }
 
+function updateCaptureRegion() {
+  if (!nativeCapture || !MAIN_WINDOW || MAIN_WINDOW.isDestroyed()) return
+  const [winW, winH] = MAIN_WINDOW.getSize()
+  const halfW = Math.ceil(winW / CONFIG.zoomLevel / 2) + 1
+  const halfH = Math.ceil(winH / CONFIG.zoomLevel / 2) + 1
+  captureRegion.x = cursorPos.x - halfW
+  captureRegion.y = cursorPos.y - halfH
+  nativeCapture.setRegion(captureRegion.x, captureRegion.y, halfW * 2, halfH * 2)
+}
+
 function startMouseTracking() {
   uIOhook.on('mousemove', (e) => {
     if (MAIN_WINDOW && !MAIN_WINDOW.isDestroyed()) {
       MAIN_WINDOW.webContents.send('cursor-position', { x: e.x, y: e.y })
 
-      // Update native capture region around cursor for efficient cropping
-      if (nativeCapture) {
-        const [winW, winH] = MAIN_WINDOW.getSize()
-        const halfW = Math.ceil(winW / CONFIG.zoomLevel / 2) + 1
-        const halfH = Math.ceil(winH / CONFIG.zoomLevel / 2) + 1
-        nativeCapture.setRegion(
-          e.x + CONFIG.focusOffsetX - halfW,
-          e.y + CONFIG.focusOffsetY - halfH,
-          halfW * 2,
-          halfH * 2
-        )
+      if (CONFIG.inputMode === 'mouse') {
+        cursorPos.x = e.x
+        cursorPos.y = e.y
+        updateCaptureRegion()
       }
     }
   })
@@ -736,14 +745,7 @@ function startMouseTracking() {
     // Arrow keys
     const dir = arrowKeyMap[e.keycode]
     if (dir) {
-      if (HAS_CURSOR_IN_CAPTURE && e.altKey) {
-        // Alt+Arrow on X11: adjust focus offset
-        if (dir === 'up') CONFIG.focusOffsetY--
-        else if (dir === 'down') CONFIG.focusOffsetY++
-        else if (dir === 'left') CONFIG.focusOffsetX--
-        else if (dir === 'right') CONFIG.focusOffsetX++
-        sendConfigToRenderer()
-      } else if (spaceHeld) {
+      if (spaceHeld) {
         // Space+Arrow: resize window
         if (!MAIN_WINDOW || MAIN_WINDOW.isDestroyed()) return
         const [w, h] = MAIN_WINDOW.getSize()
@@ -756,15 +758,37 @@ function startMouseTracking() {
         // Ctrl+Arrow: peg to screen boundary (arrow mode only)
         if (CONFIG.inputMode === 'arrow') {
           sendToRenderer('arrow-move', { dir, peg: true })
+          // Mirror peg in main for capture region
+          const primaryDisplay = screen.getPrimaryDisplay()
+          const { width: sw, height: sh } = primaryDisplay.size
+          const [winW, winH] = MAIN_WINDOW ? MAIN_WINDOW.getSize() : [800, 600]
+          const srcW = winW / CONFIG.zoomLevel / 2
+          const srcH = winH / CONFIG.zoomLevel / 2
+          if (dir === 'up') cursorPos.y = Math.floor(srcH)
+          else if (dir === 'down') cursorPos.y = sh - Math.floor(srcH)
+          else if (dir === 'left') cursorPos.x = Math.floor(srcW)
+          else if (dir === 'right') cursorPos.x = sw - Math.floor(srcW)
+          updateCaptureRegion()
         }
       } else if (e.shiftKey) {
         // Shift+Arrow: fast move (arrow mode only)
         if (CONFIG.inputMode === 'arrow') {
           sendToRenderer('arrow-move', { dir, delta: CONFIG.shiftDelta })
+          const d = CONFIG.shiftDelta
+          if (dir === 'up') cursorPos.y -= d
+          else if (dir === 'down') cursorPos.y += d
+          else if (dir === 'left') cursorPos.x -= d
+          else if (dir === 'right') cursorPos.x += d
+          updateCaptureRegion()
         }
       } else if (CONFIG.inputMode === 'arrow') {
         // Arrow: move 1 pixel
         sendToRenderer('arrow-move', { dir, delta: 1 })
+        if (dir === 'up') cursorPos.y--
+        else if (dir === 'down') cursorPos.y++
+        else if (dir === 'left') cursorPos.x--
+        else if (dir === 'right') cursorPos.x++
+        updateCaptureRegion()
       }
       return
     }
@@ -1011,13 +1035,39 @@ app.whenReady().then(async () => {
     startActiveWindowTracking()
   }
 
-  // Start native Wayland capture
-  if (IS_WAYLAND) {
-    nativeCapture = createCapture()
-    nativeCapture.onFrame((buffer, width, height) => {
-      sendToRenderer('native-frame', { buffer: Buffer.from(buffer), width, height })
-    })
-    nativeCapture.start()
+  // Start native Linux capture (PipeWire or XShm) — non-blocking
+  // The PipeWire backend may block briefly waiting for D-Bus signals,
+  // so we defer to avoid freezing the main process during startup.
+  if (IS_LINUX) {
+    setTimeout(() => {
+      nativeCapture = createCapture()
+      // Send frames directly from the C callback — the addon handles
+      // precise rate limiting. Renderer drops frames it can't handle.
+      nativeCapture.onFrame((buffer, width, height) => {
+        sendToRenderer('native-frame', {
+          buffer: Buffer.from(new Uint8Array(buffer)),
+          width, height,
+          regionX: captureRegion.x,
+          regionY: captureRegion.y,
+        })
+      })
+      const ret = nativeCapture.start()
+      if (ret === 0) {
+        nativeCapture.setRate(Math.round(100 / CONFIG.refreshInterval))
+        // Set initial region around screen center to avoid huge full-screen frames
+        const primaryDisplay = screen.getPrimaryDisplay()
+        const { width: screenW, height: screenH } = primaryDisplay.size
+        const [winW, winH] = MAIN_WINDOW.getSize()
+        const halfW = Math.ceil(winW / CONFIG.zoomLevel / 2) + 1
+        const halfH = Math.ceil(winH / CONFIG.zoomLevel / 2) + 1
+        captureRegion.x = Math.floor(screenW / 2) - halfW
+        captureRegion.y = Math.floor(screenH / 2) - halfH
+        nativeCapture.setRegion(captureRegion.x, captureRegion.y, halfW * 2, halfH * 2)
+      } else {
+        console.log('Native capture failed, renderer will use desktopCapturer')
+        nativeCapture = null
+      }
+    }, 0)
   }
 
   // Apply CLI window position/size
@@ -1055,11 +1105,11 @@ app.on('window-all-closed', () => {
   }
 })
 
-app.on('will-quit', () => {
+app.on('before-quit', () => {
   stopActiveWindowTracking()
-  if (nativeCapture) {
-    nativeCapture.stop()
-    nativeCapture = null
-  }
-  uIOhook.stop()
+  try { if (nativeCapture) nativeCapture.stop() } catch {}
+  nativeCapture = null
+  try { uIOhook.stop() } catch {}
+  // Force exit after cleanup in case something still blocks
+  setTimeout(() => process.exit(0), 500)
 })
