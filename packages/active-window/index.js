@@ -1,19 +1,23 @@
-// Shim: re-export active-win until the native addon is built
-import activeWin from 'active-win';
+import { createRequire } from 'module';
+const require = createRequire(import.meta.url);
 
-export async function getActiveWindow() {
-  const win = await activeWin();
-  if (!win) return null;
-  return {
-    x: win.bounds.x,
-    y: win.bounds.y,
-    width: win.bounds.width,
-    height: win.bounds.height,
-    title: win.title,
-  };
+let native = null;
+try {
+  native = require('./build/Release/snoop_active_window.node');
+} catch {
+  // Native addon not built — fall through to active-win shim
+}
+
+export function getActiveWindow() {
+  if (native) {
+    return native.getActiveWindow();
+  }
+  return null;
 }
 
 export function getCursorPosition() {
-  // Stub — Phase 2 will implement native cursor position
+  if (native) {
+    return native.getCursorPosition();
+  }
   return null;
 }
