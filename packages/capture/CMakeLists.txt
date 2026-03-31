@@ -48,10 +48,15 @@ elseif(WIN32)
     setup_capture_target(snoop_capture)
 
 elseif(APPLE)
-    add_library(snoop_capture SHARED src/addon.c src/darwin.c)
+    enable_language(OBJC)
+    add_library(snoop_capture SHARED src/addon.c src/darwin.m)
+    set_source_files_properties(src/darwin.m PROPERTIES
+        COMPILE_FLAGS "-fobjc-arc")
     target_link_libraries(snoop_capture
-        "-framework CoreGraphics"
-        "-framework IOSurface")
+        "-framework ScreenCaptureKit"
+        "-framework CoreMedia"
+        "-framework CoreVideo"
+        "-framework CoreGraphics")
     setup_capture_target(snoop_capture)
 
 endif()
