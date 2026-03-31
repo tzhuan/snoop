@@ -49,6 +49,7 @@ jobs:
           sudo apt-get install -y cmake rpm elfutils \
             libx11-dev libxext-dev libxtst-dev libxt-dev libxrandr-dev libxinerama-dev \
             libpipewire-0.3-dev libdbus-1-dev
+          echo '%__strip /bin/true' >> ~/.rpmmacros
 
       - name: Install dependencies
         run: npm ci
@@ -74,6 +75,26 @@ jobs:
       - name: Rebuild native addons for Electron
         run: npx electron-rebuild -w @snoop/active-window @snoop/capture
         working-directory: app
+
+      # Workspace hoisting puts deps at root node_modules/, but electron-forge
+      # only packages app/. Copy all dependencies into app/node_modules/
+      # so the full dependency tree is resolvable from the asar.
+      # electron-forge needs all deps resolvable from app/ for the dependency
+      # walk, and runtime deps must be in the asar. Copy root node_modules
+      # into app/ (preserving symlinks for speed), then replace @snoop
+      # workspace symlinks with real copies that include native addons.
+      - name: Prepare app dependencies for packaging
+        shell: bash
+        run: |
+          rm -rf app/node_modules
+          # Remove circular/workspace symlinks before copying
+          rm -f node_modules/snoop
+          rm -rf node_modules/@snoop
+          cp -r node_modules app/node_modules
+          rm -rf app/node_modules/.bin
+          mkdir -p app/node_modules/@snoop
+          cp -rL packages/active-window app/node_modules/@snoop/active-window
+          cp -rL packages/capture app/node_modules/@snoop/capture
 
       - name: Build (make)
         run: npm run make -w app

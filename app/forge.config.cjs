@@ -5,6 +5,8 @@ module.exports = {
   packagerConfig: {
     asar: true,
     icon: './assets/icon',
+    // Ad-hoc sign on macOS so Gatekeeper doesn't block the app
+    osxSign: {},
   },
   rebuildConfig: {},
   makers: [
@@ -15,7 +17,9 @@ module.exports = {
     {
       name: '@electron-forge/maker-dmg',
       platforms: ['darwin'],
-      config: {},
+      config: {
+        name: 'Snoop',
+      },
     },
     {
       name: '@electron-forge/maker-deb',

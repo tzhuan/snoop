@@ -1,4 +1,4 @@
-# <img src="assets/icon_32x32.png" alt="" width="24" height="24"> Snoop
+# <img src="app/assets/icon_32x32.png" alt="" width="24" height="24"> Snoop
 
 A cross-platform screen magnification and pixel inspection tool built with Electron. Originally a [Windows-only utility](https://www.csie.ntu.edu.tw/~cyy/projects/snoop_win/index.html), this re-implementation brings the same functionality to Windows, macOS, and Unix-like systems.
 
@@ -20,11 +20,38 @@ A cross-platform screen magnification and pixel inspection tool built with Elect
 - **Configuration persistence** with 10 save slots
 - **Always on top** window mode
 - **Copy** magnified view to clipboard
+- **Cursor-free capture** on Linux (PipeWire) and macOS (ScreenCaptureKit)
+
+## Project Structure
+
+```
+snoop/
+├── packages/
+│   ├── active-window/    # @snoop/active-window — native active window tracking
+│   └── capture/          # @snoop/capture — native screen capture (PipeWire/XShm/DXGI/ScreenCaptureKit)
+├── app/                  # Electron app
+└── package.json          # npm workspace root
+```
 
 ## Installation
 
 ```sh
 npm install
+```
+
+### Build Dependencies (Linux)
+
+Native addons require development headers:
+
+```sh
+sudo apt-get install cmake libx11-dev libxext-dev libpipewire-0.3-dev libdbus-1-dev
+```
+
+### Building Native Addons
+
+```sh
+npx cmake-js compile -d packages/active-window
+npx cmake-js compile -d packages/capture
 ```
 
 ## Usage
@@ -36,7 +63,7 @@ npm start
 Or with command-line options:
 
 ```sh
-npm start -- -4 -h -top -grid
+npm start -w app -- -- -4 -h -top -grid
 ```
 
 ## Keyboard Shortcuts
@@ -85,7 +112,6 @@ npm start -- -4 -h -top -grid
 | `Shift+Arrow` | Fast move (configurable step, default 8px) |
 | `Ctrl+Arrow` | Peg to screen boundary |
 | `Space+Arrow` | Resize window |
-| `Alt+Arrow` | Adjust focus offset (X11 and Windows) |
 
 ### Adjustments
 
@@ -138,29 +164,32 @@ npm start -- -4 -h -top -grid
 Example: start at 4x zoom with horizontal linear graph, always on top:
 
 ```sh
-npm start -- -4 -h -top
+npm start -w app -- -- -4 -h -top
 ```
 
 ## Building
 
 ```sh
-npm run package    # Create unpacked build
-npm run make       # Create platform installers
+npm run make -w app       # Create platform installers
 ```
+
+## Screen Capture Backends
+
+| Platform | Backend | Cursor-free | Notes |
+|----------|---------|-------------|-------|
+| Linux (GNOME) | PipeWire via Mutter ScreenCast | Yes | Works on both X11 and Wayland |
+| Linux (KDE, etc.) | PipeWire via xdg-desktop-portal | Yes | May show a permission dialog |
+| Linux (non-compositing) | X11 XShm | No | Fallback for basic X11 WMs |
+| macOS | ScreenCaptureKit | Yes | Requires macOS 12.3+ |
+| Windows | DXGI Desktop Duplication | Yes | |
+
+The capture backend is selected automatically at runtime. Set `SNOOP_CAPTURE=x11` or `SNOOP_CAPTURE=pipewire` to force a specific Linux backend.
 
 ## Platform Notes
 
 - **macOS**: Requires screen recording permission (System Settings > Privacy & Security > Screen Recording).
-- **X11 / Windows**: Alt+Arrow focus offset adjustment is available to compensate for cursor-capture coordinate mismatch.
-- **Wayland**: Screen capture may have limitations depending on the compositor.
-- **Active window coordinates**: Supported on macOS and Windows only (requires `active-win` native module).
-
-## Known Issues
-
-- **Cursor always rendered on X11 and Windows**: The screen capture includes the mouse cursor on X11 and Windows due to OS-level cursor compositing (`cursor: 'never'` is not effective). Use `Alt+Arrow` keys to adjust the focus offset as a workaround.
-- **Active window coordinates unavailable on Unix-like systems**: The active window coordinate mode (`W`) relies on the `active-win` native module, which only supports macOS and Windows. On X11/Wayland this feature is disabled.
-- **`d` key (show capture region) not implemented**: The original Snoop can temporarily show the captured screen region. This requires a transparent overlay window and is not implemented.
-- **`#` key (grid toggle) not implemented**: The `#` shortcut is keyboard-layout dependent. Use `F3` instead.
+- **Linux**: Native capture addon requires PipeWire and D-Bus libraries at runtime. Falls back to XShm if unavailable.
+- **Active window coordinates**: Supported on macOS, Windows, and Linux X11 (via native addon).
 
 ## Credits
 
