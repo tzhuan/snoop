@@ -1,5 +1,5 @@
 import { ipcRenderer } from 'electron'
-import { createCapture } from '@snoop/capture'
+import { createCapture, setCaptureDriver } from '@snoop/capture'
 
 // Platform detection
 const IS_LINUX = process.platform === 'linux'
@@ -9,11 +9,11 @@ const IS_WAYLAND = IS_LINUX && !!process.env.WAYLAND_DISPLAY
 
 // Multi-instance is needed for stream-based backends where each capture
 // targets one monitor. Polling backends handle multi-monitor natively.
-const NEEDS_MULTI_INSTANCE = IS_WAYLAND || IS_DARWIN
-// Note: Windows DXGI multi-instance added later (Phase 2)
+let NEEDS_MULTI_INSTANCE = IS_WAYLAND || IS_DARWIN
+// Windows DXGI also needs multi-instance (set dynamically via capture-driver-change)
 
-// --- Single-instance path (X11 XShm, Windows BitBlt/DXGI) ---
-// --- Multi-instance path (Wayland PipeWire, macOS SCK) ---
+// --- Single-instance path (X11 XShm, Windows BitBlt) ---
+// --- Multi-instance path (Wayland PipeWire, macOS SCK, Windows DXGI) ---
 
 let nativeCapture = null       // single-instance only
 let latestNativeFrame = null   // single-instance only
@@ -22,8 +22,8 @@ let latestNativeFrame = null   // single-instance only
 const captureInstances = new Map()  // displayId → { capture, latestFrame, bounds }
 let captureRate = 30
 
-if (!NEEDS_MULTI_INSTANCE) {
-  // Single-instance: create one capture upfront
+function initSingleInstance() {
+  if (nativeCapture) return
   try {
     nativeCapture = createCapture()
     nativeCapture.onFrame((buffer, width, height) => {
@@ -32,6 +32,10 @@ if (!NEEDS_MULTI_INSTANCE) {
   } catch (err) {
     console.warn('Native capture not available:', err.message)
   }
+}
+
+if (!NEEDS_MULTI_INSTANCE) {
+  initSingleInstance()
 }
 
 function startDisplayCapture(displayId, bounds) {
@@ -127,6 +131,34 @@ ipcRenderer.on('activate-displays', (_e, displayList) => {
   }
 })
 
+// Driver change: stop everything, switch driver, reinitialize
+ipcRenderer.on('capture-driver-change', (_e, driver) => {
+  // Stop all existing captures
+  for (const id of [...captureInstances.keys()]) stopDisplayCapture(id)
+  if (nativeCapture) {
+    nativeCapture.stop()
+    nativeCapture = null
+    latestNativeFrame = null
+  }
+
+  // Set new driver
+  setCaptureDriver(driver)
+
+  // Update multi-instance flag
+  // eicc and pipewire on Wayland both need multi-instance; dxgi on Windows too
+  NEEDS_MULTI_INSTANCE = IS_WAYLAND || IS_DARWIN || (IS_WIN32 && driver === 'dxgi')
+
+  // Reinitialize single-instance if needed
+  if (!NEEDS_MULTI_INSTANCE) {
+    initSingleInstance()
+    if (nativeCapture) {
+      nativeCapture.setRate(captureRate)
+      nativeCapture.start()
+    }
+  }
+  // Multi-instance will be activated via activate-displays from main process
+})
+
 // For X11 XShm hotplug: restart the single capture instance
 ipcRenderer.on('capture-restart', () => {
   if (NEEDS_MULTI_INSTANCE) {
@@ -188,7 +220,7 @@ window.snoop = {
     return frames
   },
 
-  needsMultiInstance: NEEDS_MULTI_INSTANCE,
+  get needsMultiInstance() { return NEEDS_MULTI_INSTANCE },
 
   // Config
   onConfigChange: (callback) => ipcRenderer.on('config-change', (_e, config) => callback(config)),

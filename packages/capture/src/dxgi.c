@@ -20,6 +20,9 @@ struct CaptureState {
     int screen_width;
     int screen_height;
 
+    /* Multi-monitor: which output to capture */
+    int output_index;
+
     /* Threading */
     HANDLE thread;
     volatile int running;
@@ -38,9 +41,11 @@ struct CaptureState {
     int suspended;
     int snap_requested;
 
-    /* Callback */
+    /* Callbacks */
     frame_callback_t callback;
+    error_callback_t error_callback;
     void *userdata;
+    void *error_userdata;
 };
 
 static LONGLONG get_time(CaptureState *state) {
@@ -68,7 +73,7 @@ static int init_dxgi(CaptureState *state) {
     if (FAILED(hr)) return -1;
 
     IDXGIOutput *output = NULL;
-    hr = IDXGIAdapter_EnumOutputs(adapter, 0, &output);
+    hr = IDXGIAdapter_EnumOutputs(adapter, state->output_index, &output);
     IDXGIAdapter_Release(adapter);
     if (FAILED(hr)) return -1;
 
@@ -287,17 +292,57 @@ void capture_resume(CaptureState *state) { state->suspended = 0; }
 void capture_snap(CaptureState *state) { state->snap_requested = 1; }
 
 void capture_on_error(CaptureState *state, error_callback_t cb, void *userdata) {
-    (void)state; (void)cb; (void)userdata;
+    state->error_callback = cb;
+    state->error_userdata = userdata;
 }
 
-/* TODO Phase 2: parameterize EnumOutputs index for multi-monitor */
 int capture_set_display(CaptureState *state, const char *display_id) {
-    (void)state; (void)display_id;
+    if (!display_id) return -1;
+    state->output_index = atoi(display_id);
     return 0;
 }
 
 int capture_list_displays(CaptureState *state,
                           CaptureDisplayInfo *out, int max_displays) {
-    (void)state; (void)out; (void)max_displays;
-    return -1;
+    (void)state;
+    if (!out || max_displays <= 0) return -1;
+
+    /* Create a temporary D3D11 device to enumerate outputs */
+    ID3D11Device *dev = NULL;
+    D3D_FEATURE_LEVEL fl;
+    HRESULT hr = D3D11CreateDevice(NULL, D3D_DRIVER_TYPE_HARDWARE, NULL,
+                                    0, NULL, 0, D3D11_SDK_VERSION,
+                                    &dev, &fl, NULL);
+    if (FAILED(hr)) return -1;
+
+    IDXGIDevice *dxgi_dev = NULL;
+    hr = ID3D11Device_QueryInterface(dev, &IID_IDXGIDevice, (void **)&dxgi_dev);
+    if (FAILED(hr)) { ID3D11Device_Release(dev); return -1; }
+
+    IDXGIAdapter *adapter = NULL;
+    hr = IDXGIDevice_GetAdapter(dxgi_dev, &adapter);
+    IDXGIDevice_Release(dxgi_dev);
+    if (FAILED(hr)) { ID3D11Device_Release(dev); return -1; }
+
+    int count = 0;
+    for (UINT i = 0; count < max_displays; i++) {
+        IDXGIOutput *output = NULL;
+        hr = IDXGIAdapter_EnumOutputs(adapter, i, &output);
+        if (FAILED(hr)) break;
+
+        DXGI_OUTPUT_DESC desc;
+        IDXGIOutput_GetDesc(output, &desc);
+        IDXGIOutput_Release(output);
+
+        snprintf(out[count].connector, sizeof(out[count].connector), "%u", i);
+        out[count].x = desc.DesktopCoordinates.left;
+        out[count].y = desc.DesktopCoordinates.top;
+        out[count].width = desc.DesktopCoordinates.right - desc.DesktopCoordinates.left;
+        out[count].height = desc.DesktopCoordinates.bottom - desc.DesktopCoordinates.top;
+        count++;
+    }
+
+    IDXGIAdapter_Release(adapter);
+    ID3D11Device_Release(dev);
+    return count;
 }

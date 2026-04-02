@@ -6,19 +6,28 @@ import path from 'node:path';
 const require = createRequire(import.meta.url);
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
-// Backend names in order of preference.
-// On Linux: pipewire first (Wayland + GNOME X11), then x11 (XShm fallback).
-// On Windows/macOS: single snoop_capture binary.
-// Set SNOOP_CAPTURE=x11|pipewire to force a specific backend.
-const ALL_BACKENDS = [
-  'snoop_capture_pipewire',
-  'snoop_capture_x11',
-  'snoop_capture',
-];
+// Backend names in order of preference per platform.
+// Linux: pipewire first (Wayland + GNOME X11), then x11 (XShm fallback).
+// Windows: bitblt (default) or dxgi (opt-in for DirectX capture).
+// macOS: single snoop_capture binary.
+// Set SNOOP_CAPTURE=x11|pipewire|bitblt|dxgi to force a specific backend.
+const PLATFORM_BACKENDS = {
+  linux: ['snoop_capture_pipewire', 'snoop_capture_eicc', 'snoop_capture_x11'],
+  win32: ['snoop_capture_bitblt', 'snoop_capture_dxgi'],
+  darwin: ['snoop_capture'],
+};
+const ALL_BACKENDS = PLATFORM_BACKENDS[process.platform] || ['snoop_capture'];
 const FORCE_BACKEND = process.env.SNOOP_CAPTURE;
 const BACKEND_NAMES = FORCE_BACKEND
   ? [`snoop_capture_${FORCE_BACKEND}`]
   : ALL_BACKENDS;
+
+// Allow runtime driver override (set by main process before createCapture)
+let _driverOverride = null;
+
+export function setCaptureDriver(driver) {
+  _driverOverride = driver ? `snoop_capture_${driver}` : null;
+}
 
 // Try prebuilt binary first (prebuilds/<platform>-<arch>/), then build/Release/
 function loadBackend(name) {
@@ -60,8 +69,12 @@ export function createCapture() {
       if (active) active.onFrame(callback);
     },
     start() {
+      // If a driver override is set, try that first
+      const names = _driverOverride
+        ? [_driverOverride, ...BACKEND_NAMES.filter(n => n !== _driverOverride)]
+        : BACKEND_NAMES;
       // Try each backend lazily — only load the next if the previous fails
-      for (const name of BACKEND_NAMES) {
+      for (const name of names) {
         const backend = loadBackend(name);
         if (!backend) continue;
 

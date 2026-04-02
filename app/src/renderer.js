@@ -26,7 +26,9 @@ const RUNTIME = {
   refreshTimerId: null,
 }
 
-const MULTI_INSTANCE = !!(window.snoop && window.snoop.needsMultiInstance)
+function isMultiInstance() {
+  return !!(window.snoop && window.snoop.needsMultiInstance)
+}
 
 const RULER_SIZE = 12
 
@@ -135,7 +137,7 @@ function needsWorkerProcessing() {
 
 function renderFrame() {
   if (CAPTURE_MODE === 'native') {
-    if (MULTI_INSTANCE) {
+    if (isMultiInstance()) {
       // Multi-instance: composite frames from multiple displays
       const frames = window.snoop.getNativeFrames()
       if (!frames || frames.length === 0) return

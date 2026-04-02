@@ -17,6 +17,7 @@ export const DEFAULT_CONFIG = {
   refreshEnabled: true,
   refreshInterval: 1, // in 1/100 sec units
   shiftDelta: 8, // pixels to move per Shift+Arrow press
+  captureDriver: null, // null = platform default; 'bitblt' | 'dxgi' (Windows), 'pipewire' | 'eicc' (Wayland)
   displayOptions: {
     red: true, green: true, blue: true,
     autoNormHistogram: false, autoNormGradient: false,

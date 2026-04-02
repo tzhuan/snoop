@@ -18,8 +18,11 @@ const IS_WAYLAND = process.env.XDG_SESSION_TYPE === 'wayland'
 const SUPPORTS_ACTIVE_WINDOW = IS_DARWIN || IS_WIN32 || IS_X11
 const CAN_WARP_CURSOR = !IS_WAYLAND && typeof setCursorPosition === 'function'
 
-// Multi-instance needed for stream-based backends (each captures one monitor)
-const NEEDS_MULTI_INSTANCE = IS_WAYLAND || IS_DARWIN
+// Multi-instance needed for stream-based backends (each captures one monitor).
+// Evaluated as a function since captureDriver can change at runtime.
+function needsMultiInstance() {
+  return IS_WAYLAND || IS_DARWIN || (IS_WIN32 && CONFIG.captureDriver === 'dxgi')
+}
 
 let MAIN_WINDOW
 let cursorPos = { x: 0, y: 0 } // Logical cursor position (mouse or arrow mode)
@@ -85,6 +88,14 @@ function resetToDefaults() {
   if (MAIN_WINDOW && !MAIN_WINDOW.isDestroyed()) {
     MAIN_WINDOW.setAlwaysOnTop(CONFIG.alwaysOnTop)
   }
+}
+
+function switchCaptureDriver(driver) {
+  CONFIG.captureDriver = driver
+  // Notify preload to restart capture with new driver
+  sendToRenderer('capture-driver-change', driver)
+  sendConfigToRenderer()
+  buildAppMenu()
 }
 
 function adjustDisplayOption(key, delta, min, max) {
@@ -390,6 +401,40 @@ function buildAppMenu() {
           label: 'Display Options...',
           click: () => showDisplayOptionsDialog(),
         },
+        ...(IS_WIN32 ? [{
+          label: 'Capture Driver',
+          submenu: [
+            {
+              label: 'BitBlt (default)',
+              type: 'radio',
+              checked: CONFIG.captureDriver !== 'dxgi',
+              click: () => switchCaptureDriver(null),
+            },
+            {
+              label: 'DXGI (DirectX)',
+              type: 'radio',
+              checked: CONFIG.captureDriver === 'dxgi',
+              click: () => switchCaptureDriver('dxgi'),
+            },
+          ],
+        }] : []),
+        ...(IS_WAYLAND ? [{
+          label: 'Capture Driver',
+          submenu: [
+            {
+              label: 'PipeWire (default)',
+              type: 'radio',
+              checked: CONFIG.captureDriver !== 'eicc',
+              click: () => switchCaptureDriver(null),
+            },
+            {
+              label: 'ext-image-copy-capture',
+              type: 'radio',
+              checked: CONFIG.captureDriver === 'eicc',
+              click: () => switchCaptureDriver('eicc'),
+            },
+          ],
+        }] : []),
         {
           label: 'Always On Top',
           type: 'checkbox',
@@ -651,13 +696,8 @@ let spaceHeld = false
 
 // Provide desktop capturer sources to renderer
 ipcMain.handle('get-sources', async () => {
-  if (IS_LINUX || IS_DARWIN) {
-    // Use native capture addon — required for multi-instance on macOS,
-    // and avoids X11 connection exhaustion on Linux
-    return [{ id: '__native__', name: 'Native Capture' }]
-  }
-  const sources = await desktopCapturer.getSources({ types: ['screen'] })
-  return sources.map((s) => ({ id: s.id, name: s.name }))
+  // All platforms now use native capture addon
+  return [{ id: '__native__', name: 'Native Capture' }]
 })
 
 // Copy image data to clipboard
@@ -743,19 +783,26 @@ function getOverlappingDisplays(vx, vy, vw, vh) {
 /** Refresh display list and build displayIdMap for multi-instance backends */
 function refreshDisplays() {
   displays = screen.getAllDisplays()
-  if (!NEEDS_MULTI_INSTANCE) return
+  if (!needsMultiInstance()) return
 
-  // For macOS: Electron display id maps to CGDirectDisplayID
-  // For Wayland: We'd need to match by bounds to Mutter connector strings
-  // For now, use Electron display.id as a string identifier
   displayIdMap.clear()
-  for (const d of displays) {
-    if (IS_DARWIN) {
-      // On macOS, Electron display.id IS the CGDirectDisplayID
+  if (IS_DARWIN) {
+    // On macOS, Electron display.id IS the CGDirectDisplayID
+    for (const d of displays) {
       displayIdMap.set(d.id, String(d.id))
-    } else {
-      // Wayland: use Electron display id as placeholder
-      // TODO: match to Mutter connector via listDisplays() bounds comparison
+    }
+  } else if (IS_WIN32 && CONFIG.captureDriver === 'dxgi') {
+    // Windows/DXGI: map to output index by sorted position (left-to-right, top-to-bottom)
+    const sorted = [...displays].sort((a, b) =>
+      a.bounds.x !== b.bounds.x ? a.bounds.x - b.bounds.x : a.bounds.y - b.bounds.y
+    )
+    for (let i = 0; i < sorted.length; i++) {
+      displayIdMap.set(sorted[i].id, String(i))
+    }
+  } else {
+    // Wayland: use Electron display id as placeholder
+    // TODO: match to Mutter connector via listDisplays() bounds comparison
+    for (const d of displays) {
       displayIdMap.set(d.id, String(d.id))
     }
   }
@@ -774,7 +821,7 @@ function updateCaptureRegion() {
   // Always send the global viewport rect (used for coordinate mapping)
   sendToRenderer('capture-region', { x: vx, y: vy, w: vw, h: vh })
 
-  if (NEEDS_MULTI_INSTANCE) {
+  if (needsMultiInstance()) {
     // Compute which displays overlap the viewport
     const overlapping = getOverlappingDisplays(vx, vy, vw, vh)
     const newIds = new Set(overlapping.map(d => displayIdMap.get(d.id)).filter(Boolean))
@@ -1146,14 +1193,16 @@ app.whenReady().then(async () => {
   })
 
   // Send initial capture config to the renderer (preload manages the addon)
-  // Native capture used on Linux + macOS; Windows uses video capture (for now)
-  if (IS_LINUX || IS_DARWIN) {
+  {
     const primaryDisplay = screen.getPrimaryDisplay()
     const { x: ox, y: oy } = primaryDisplay.bounds
     const { width: screenW, height: screenH } = primaryDisplay.size
     cursorPos.x = ox + Math.floor(screenW / 2)
     cursorPos.y = oy + Math.floor(screenH / 2)
     MAIN_WINDOW.webContents.once('did-finish-load', () => {
+      if (CONFIG.captureDriver) {
+        sendToRenderer('capture-driver-change', CONFIG.captureDriver)
+      }
       sendToRenderer('capture-rate', Math.round(100 / CONFIG.refreshInterval))
       updateCaptureRegion()
     })

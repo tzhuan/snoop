@@ -42,10 +42,62 @@ if(UNIX AND NOT APPLE)
     target_link_libraries(snoop_capture_x11 ${X11_LIBRARIES} Xext pthread)
     setup_capture_target(snoop_capture_x11)
 
+    # ext-image-copy-capture-v1 backend (opt-in, Wayland only)
+    pkg_check_modules(WAYLAND_CLIENT wayland-client)
+    if(WAYLAND_CLIENT_FOUND)
+        # Generate protocol C code from XML
+        find_program(WAYLAND_SCANNER wayland-scanner)
+        if(WAYLAND_SCANNER)
+            set(PROTO_DIR ${CMAKE_CURRENT_SOURCE_DIR}/protocol)
+            add_custom_command(
+                OUTPUT ${PROTO_DIR}/ext-image-copy-capture-v1-protocol.c
+                       ${PROTO_DIR}/ext-image-copy-capture-v1-client-protocol.h
+                COMMAND ${WAYLAND_SCANNER} private-code
+                    ${PROTO_DIR}/ext-image-copy-capture-v1.xml
+                    ${PROTO_DIR}/ext-image-copy-capture-v1-protocol.c
+                COMMAND ${WAYLAND_SCANNER} client-header
+                    ${PROTO_DIR}/ext-image-copy-capture-v1.xml
+                    ${PROTO_DIR}/ext-image-copy-capture-v1-client-protocol.h
+                DEPENDS ${PROTO_DIR}/ext-image-copy-capture-v1.xml
+            )
+            add_custom_command(
+                OUTPUT ${PROTO_DIR}/ext-image-capture-source-v1-protocol.c
+                       ${PROTO_DIR}/ext-image-capture-source-v1-client-protocol.h
+                COMMAND ${WAYLAND_SCANNER} private-code
+                    ${PROTO_DIR}/ext-image-capture-source-v1.xml
+                    ${PROTO_DIR}/ext-image-capture-source-v1-protocol.c
+                COMMAND ${WAYLAND_SCANNER} client-header
+                    ${PROTO_DIR}/ext-image-capture-source-v1.xml
+                    ${PROTO_DIR}/ext-image-capture-source-v1-client-protocol.h
+                DEPENDS ${PROTO_DIR}/ext-image-capture-source-v1.xml
+            )
+        endif()
+
+        add_library(snoop_capture_eicc SHARED
+            src/addon.c
+            src/eicc.c
+            ${PROTO_DIR}/ext-image-copy-capture-v1-protocol.c
+            ${PROTO_DIR}/ext-image-capture-source-v1-protocol.c
+        )
+        target_include_directories(snoop_capture_eicc PRIVATE
+            ${WAYLAND_CLIENT_INCLUDE_DIRS}
+            ${PROTO_DIR})
+        target_link_libraries(snoop_capture_eicc
+            ${WAYLAND_CLIENT_LIBRARIES}
+            pthread)
+        setup_capture_target(snoop_capture_eicc)
+    endif()
+
 elseif(WIN32)
-    add_library(snoop_capture SHARED src/addon.c src/dxgi.c)
-    target_link_libraries(snoop_capture d3d11 dxgi)
-    setup_capture_target(snoop_capture)
+    # BitBlt backend (default) — multi-monitor for free, no DirectX capture
+    add_library(snoop_capture_bitblt SHARED src/addon.c src/bitblt.c)
+    target_link_libraries(snoop_capture_bitblt gdi32 user32)
+    setup_capture_target(snoop_capture_bitblt)
+
+    # DXGI backend (opt-in) — captures DirectX games, per-monitor streams
+    add_library(snoop_capture_dxgi SHARED src/addon.c src/dxgi.c)
+    target_link_libraries(snoop_capture_dxgi d3d11 dxgi)
+    setup_capture_target(snoop_capture_dxgi)
 
 elseif(APPLE)
     enable_language(OBJC)

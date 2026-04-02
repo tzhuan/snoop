@@ -27,7 +27,9 @@ void capture_on_error(CaptureState *state, error_callback_t cb, void *userdata);
  *   - macOS: CGDirectDisplayID as decimal string
  *   - Wayland/PipeWire: Mutter connector string (e.g. "DP-1")
  *   - X11: no-op (root window spans all monitors)
- *   - Windows/DXGI: output index as decimal string
+ *   - Windows/DXGI: output index as decimal string (multi-instance)
+ *   - Windows/BitBlt: no-op (virtual desktop spans all monitors)
+ *   - Wayland/eicc: wl_output name (e.g. "DP-1")
  * Returns 0 on success, -1 on error. */
 int capture_set_display(CaptureState *state, const char *display_id);
 

@@ -104,6 +104,12 @@ jobs:
         run: |
           mkdir -p dist
           find app/out/make -type f \( -name '*.zip' -o -name '*.dmg' -o -name '*.deb' -o -name '*.rpm' -o -name '*.AppImage' \) -exec cp {} dist/ \;
+          # Rename DMGs to include arch (both darwin-arm64 and darwin-x64 produce "Snoop.dmg")
+          for f in dist/*.dmg; do
+            [ -f "$f" ] || continue
+            base="${f%.dmg}"
+            mv "$f" "${base}-${{ matrix.platform }}.dmg"
+          done
           ls -la dist/
 
       - name: Upload artifacts
