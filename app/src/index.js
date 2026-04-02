@@ -2,7 +2,7 @@ import { app, BrowserWindow, clipboard, desktopCapturer, dialog, ipcMain, Menu, 
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { uIOhook, UiohookKey } from 'uiohook-napi'
-import { getActiveWindow as nativeGetActiveWindow, setCursorPosition } from '@snoop/active-window'
+import { getActiveWindow as nativeGetActiveWindow, setCursorPosition } from '@snoop/geometry'
 import pkg from '../package.json' with { type: 'json' }
 import { DEFAULT_CONFIG } from './config-defaults.js'
 

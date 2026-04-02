@@ -27,7 +27,7 @@ A cross-platform screen magnification and pixel inspection tool built with Elect
 ```
 snoop/
 ├── packages/
-│   ├── active-window/    # @snoop/active-window — native active window tracking
+│   ├── geometry/         # @snoop/geometry — native desktop geometry (active window, cursor, displays)
 │   └── capture/          # @snoop/capture — native screen capture (PipeWire/XShm/DXGI/ScreenCaptureKit)
 ├── app/                  # Electron app
 └── package.json          # npm workspace root
@@ -50,7 +50,7 @@ sudo apt-get install cmake libx11-dev libxext-dev libpipewire-0.3-dev libdbus-1-
 ### Building Native Addons
 
 ```sh
-npx cmake-js compile -d packages/active-window
+npx cmake-js compile -d packages/geometry
 npx cmake-js compile -d packages/capture
 ```
 

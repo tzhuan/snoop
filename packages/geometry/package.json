@@ -1,7 +1,7 @@
 {
-  "name": "@snoop/active-window",
+  "name": "@snoop/geometry",
   "version": "0.0.1",
-  "description": "Cross-platform active window tracking",
+  "description": "Cross-platform desktop geometry: active window, cursor, and display info",
   "main": "index.js",
   "type": "module",
   "license": "BSD-3-Clause",

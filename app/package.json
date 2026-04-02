@@ -21,7 +21,7 @@
   },
   "license": "BSD-3-Clause",
   "dependencies": {
-    "@snoop/active-window": "*",
+    "@snoop/geometry": "*",
     "@snoop/capture": "*",
     "uiohook-napi": "^1.5.5"
   },

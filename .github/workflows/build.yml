@@ -55,8 +55,8 @@ jobs:
         run: npm ci
 
       # Build native addons with cmake-js
-      - name: Build @snoop/active-window
-        run: npx cmake-js compile -d packages/active-window
+      - name: Build @snoop/geometry
+        run: npx cmake-js compile -d packages/geometry
 
       - name: Build @snoop/capture
         run: npx cmake-js compile -d packages/capture
@@ -66,14 +66,14 @@ jobs:
         shell: bash
         run: |
           PREBUILD_DIR=${{ matrix.platform }}
-          mkdir -p packages/active-window/prebuilds/$PREBUILD_DIR
+          mkdir -p packages/geometry/prebuilds/$PREBUILD_DIR
           mkdir -p packages/capture/prebuilds/$PREBUILD_DIR
-          cp packages/active-window/build/Release/*.node packages/active-window/prebuilds/$PREBUILD_DIR/
+          cp packages/geometry/build/Release/*.node packages/geometry/prebuilds/$PREBUILD_DIR/
           cp packages/capture/build/Release/*.node packages/capture/prebuilds/$PREBUILD_DIR/
 
       # Rebuild native addons for Electron's Node version
       - name: Rebuild native addons for Electron
-        run: npx electron-rebuild -w @snoop/active-window @snoop/capture
+        run: npx electron-rebuild -w @snoop/geometry @snoop/capture
         working-directory: app
 
       # Workspace hoisting puts deps at root node_modules/, but electron-forge
@@ -93,7 +93,7 @@ jobs:
           cp -r node_modules app/node_modules
           rm -rf app/node_modules/.bin
           mkdir -p app/node_modules/@snoop
-          cp -rL packages/active-window app/node_modules/@snoop/active-window
+          cp -rL packages/geometry app/node_modules/@snoop/geometry
           cp -rL packages/capture app/node_modules/@snoop/capture
 
       - name: Build (make)

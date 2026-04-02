@@ -1,5 +1,5 @@
-#ifndef SNOOP_ACTIVE_WINDOW_PLATFORM_H
-#define SNOOP_ACTIVE_WINDOW_PLATFORM_H
+#ifndef SNOOP_GEOMETRY_PLATFORM_H
+#define SNOOP_GEOMETRY_PLATFORM_H
 
 typedef struct {
     int x, y, width, height;

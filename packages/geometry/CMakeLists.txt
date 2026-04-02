@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.15)
-project(snoop_active_window)
+project(snoop_geometry)
 
 # N-API / cmake-js integration
 include_directories(${CMAKE_JS_INC})

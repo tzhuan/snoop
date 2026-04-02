@@ -9,8 +9,8 @@ const platform = `${process.platform}-${process.arch}`;
 
 let native = null;
 for (const p of [
-  path.join(__dirname, 'prebuilds', platform, 'snoop_active_window.node'),
-  path.join(__dirname, 'build', 'Release', 'snoop_active_window.node'),
+  path.join(__dirname, 'prebuilds', platform, 'snoop_geometry.node'),
+  path.join(__dirname, 'build', 'Release', 'snoop_geometry.node'),
 ]) {
   try { native = require(p); break; } catch {}
 }
