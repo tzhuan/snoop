@@ -8,11 +8,8 @@
   "main": "src/index.js",
   "private": true,
   "scripts": {
-    "start": "electron-forge start",
-    "package": "electron-forge package",
-    "make": "electron-forge make",
-    "publish": "electron-forge publish",
-    "lint": "echo \"No linting configured\""
+    "start": "electron .",
+    "dist": "electron-builder --config electron-builder.config.cjs"
   },
   "keywords": [],
   "author": {
@@ -21,21 +18,13 @@
   },
   "license": "BSD-3-Clause",
   "dependencies": {
-    "@snoop/geometry": "*",
     "@snoop/capture": "*",
+    "@snoop/geometry": "*",
     "uiohook-napi": "^1.5.5"
   },
   "devDependencies": {
-    "@electron-forge/cli": "^7.11.1",
-    "@electron-forge/maker-deb": "^7.11.1",
-    "@electron-forge/maker-dmg": "^7.11.1",
-    "@electron-forge/maker-rpm": "^7.11.1",
-    "@electron-forge/maker-squirrel": "^7.11.1",
-    "@electron-forge/maker-zip": "^7.11.1",
-    "@electron-forge/plugin-auto-unpack-natives": "^7.11.1",
-    "@electron-forge/plugin-fuses": "^7.11.1",
-    "@electron/fuses": "^1.0.0",
-    "@pengx17/electron-forge-maker-appimage": "^1.2.1",
-    "electron": "^41.0.0"
+    "@electron/rebuild": "^4.0.3",
+    "electron": "^41.0.0",
+    "electron-builder": "^25.1.8"
   }
 }

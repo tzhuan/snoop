@@ -6,6 +6,7 @@
     "app"
   ],
   "scripts": {
-    "start": "npm start -w app"
+    "start": "npm start -w app",
+    "dist": "npm run dist -w app"
   }
 }
