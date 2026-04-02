@@ -285,3 +285,19 @@ void capture_set_rate(CaptureState *state, int fps) {
 void capture_suspend(CaptureState *state) { state->suspended = 1; }
 void capture_resume(CaptureState *state) { state->suspended = 0; }
 void capture_snap(CaptureState *state) { state->snap_requested = 1; }
+
+void capture_on_error(CaptureState *state, error_callback_t cb, void *userdata) {
+    (void)state; (void)cb; (void)userdata;
+}
+
+/* TODO Phase 2: parameterize EnumOutputs index for multi-monitor */
+int capture_set_display(CaptureState *state, const char *display_id) {
+    (void)state; (void)display_id;
+    return 0;
+}
+
+int capture_list_displays(CaptureState *state,
+                          CaptureDisplayInfo *out, int max_displays) {
+    (void)state; (void)out; (void)max_displays;
+    return -1;
+}

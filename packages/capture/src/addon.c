@@ -7,6 +7,7 @@
 typedef struct {
     CaptureState *capture;
     napi_threadsafe_function tsfn;
+    napi_threadsafe_function error_tsfn;
     napi_ref handle_ref;
 } AddonCapture;
 
@@ -72,10 +73,39 @@ static void capture_release_tsfn(AddonCapture *ac) {
     }
 }
 
+static void capture_release_error_tsfn(AddonCapture *ac) {
+    if (ac->error_tsfn) {
+        napi_release_threadsafe_function(ac->error_tsfn, napi_tsfn_release);
+        ac->error_tsfn = NULL;
+    }
+}
+
+/* Called on JS thread when an error arrives */
+static void error_call_js(napi_env env, napi_value js_cb, void *context, void *data) {
+    char *msg = data;
+    if (!env || !msg) { free(msg); return; }
+
+    napi_value argv[1], undefined;
+    napi_create_string_utf8(env, msg, NAPI_AUTO_LENGTH, &argv[0]);
+    napi_get_undefined(env, &undefined);
+    napi_call_function(env, undefined, js_cb, 1, argv, NULL);
+    free(msg);
+}
+
+/* Native error callback — called from backend thread */
+static void native_error_cb(void *userdata, const char *message) {
+    AddonCapture *ac = userdata;
+    if (!ac->error_tsfn) return;
+    char *msg = strdup(message ? message : "unknown error");
+    if (!msg) return;
+    napi_call_threadsafe_function(ac->error_tsfn, msg, napi_tsfn_nonblocking);
+}
+
 /* GC destructor for the wrapped CaptureState */
 static void capture_destructor(napi_env env, void *data, void *hint) {
     AddonCapture *ac = data;
     capture_release_tsfn(ac);
+    capture_release_error_tsfn(ac);
     capture_destroy(ac->capture);
     free(ac);
 }
@@ -125,6 +155,7 @@ static napi_value js_stop(napi_env env, napi_callback_info info) {
     AddonCapture *ac = unwrap_capture(env, info);
     if (!ac) return NULL;
     capture_release_tsfn(ac);
+    capture_release_error_tsfn(ac);
     capture_stop(ac->capture);
     return NULL;
 }
@@ -182,6 +213,80 @@ static napi_value js_snap(napi_env env, napi_callback_info info) {
     return NULL;
 }
 
+static napi_value js_on_error(napi_env env, napi_callback_info info) {
+    size_t argc = 1;
+    napi_value argv[1], this_val;
+    napi_get_cb_info(env, info, &argc, argv, &this_val, NULL);
+
+    AddonCapture *ac = NULL;
+    napi_unwrap(env, this_val, (void **)&ac);
+    if (!ac) return NULL;
+
+    capture_release_error_tsfn(ac);
+
+    napi_value resource_name;
+    napi_create_string_utf8(env, "snoop_capture_error", NAPI_AUTO_LENGTH, &resource_name);
+    napi_create_threadsafe_function(env, argv[0], NULL, resource_name,
+                                    0, 1, NULL, NULL, NULL,
+                                    error_call_js, &ac->error_tsfn);
+    capture_on_error(ac->capture, native_error_cb, ac);
+    return NULL;
+}
+
+static napi_value js_set_display(napi_env env, napi_callback_info info) {
+    size_t argc = 1;
+    napi_value argv[1], this_val;
+    napi_get_cb_info(env, info, &argc, argv, &this_val, NULL);
+
+    AddonCapture *ac = NULL;
+    napi_unwrap(env, this_val, (void **)&ac);
+    if (!ac) return NULL;
+
+    char display_id[128];
+    size_t len;
+    napi_get_value_string_utf8(env, argv[0], display_id, sizeof(display_id), &len);
+
+    int ret = capture_set_display(ac->capture, display_id);
+    napi_value result;
+    napi_create_int32(env, ret, &result);
+    return result;
+}
+
+static napi_value js_list_displays(napi_env env, napi_callback_info info) {
+    AddonCapture *ac = unwrap_capture(env, info);
+    if (!ac) return NULL;
+
+    CaptureDisplayInfo displays[32];
+    int count = capture_list_displays(ac->capture, displays, 32);
+
+    napi_value arr;
+    napi_create_array(env, &arr);
+    if (count <= 0) return arr;
+
+    for (int i = 0; i < count; i++) {
+        napi_value obj, val;
+        napi_create_object(env, &obj);
+
+        napi_create_string_utf8(env, displays[i].connector, NAPI_AUTO_LENGTH, &val);
+        napi_set_named_property(env, obj, "connector", val);
+
+        napi_create_int32(env, displays[i].x, &val);
+        napi_set_named_property(env, obj, "x", val);
+
+        napi_create_int32(env, displays[i].y, &val);
+        napi_set_named_property(env, obj, "y", val);
+
+        napi_create_int32(env, displays[i].width, &val);
+        napi_set_named_property(env, obj, "width", val);
+
+        napi_create_int32(env, displays[i].height, &val);
+        napi_set_named_property(env, obj, "height", val);
+
+        napi_set_element(env, arr, i, obj);
+    }
+    return arr;
+}
+
 /* ---------- createCapture() ---------- */
 
 static napi_value js_create_capture(napi_env env, napi_callback_info info) {
@@ -213,6 +318,9 @@ static napi_value js_create_capture(napi_env env, napi_callback_info info) {
     ADD_METHOD("suspend", js_suspend)
     ADD_METHOD("resume", js_resume)
     ADD_METHOD("snap", js_snap)
+    ADD_METHOD("setDisplay", js_set_display)
+    ADD_METHOD("listDisplays", js_list_displays)
+    ADD_METHOD("onError", js_on_error)
 
     #undef ADD_METHOD
 

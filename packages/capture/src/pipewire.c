@@ -36,6 +36,7 @@ struct CaptureState {
     char *stream_path;
     uint32_t pipewire_node_id;
     int capture_method;
+    char *display_id;  /* Mutter connector string, e.g. "DP-1" */
 
     /* PipeWire */
     struct pw_main_loop *pw_loop;
@@ -67,6 +68,10 @@ struct CaptureState {
     /* Callback */
     frame_callback_t callback;
     void *userdata;
+
+    /* Error callback */
+    error_callback_t error_callback;
+    void *error_userdata;
 };
 
 /* ---------- helpers ---------- */
@@ -152,8 +157,8 @@ static int dbus_record_monitor(CaptureState *state) {
         MUTTER_SESSION_IFACE, "RecordMonitor");
     if (!msg) return -1;
 
-    /* Empty connector string = primary monitor */
-    const char *connector = "";
+    /* Empty connector string = primary monitor; set via capture_set_display() */
+    const char *connector = state->display_id ? state->display_id : "";
     DBusMessageIter iter, dict_iter, entry_iter, variant_iter;
     dbus_message_iter_init_append(msg, &iter);
     dbus_message_iter_append_basic(&iter, DBUS_TYPE_STRING, &connector);
@@ -856,6 +861,7 @@ void capture_stop(CaptureState *state) {
 void capture_destroy(CaptureState *state) {
     if (!state) return;
     capture_stop(state);
+    free(state->display_id);
     free(state->session_path);
     free(state->stream_path);
     free(state);
@@ -888,4 +894,24 @@ void capture_resume(CaptureState *state) {
 
 void capture_snap(CaptureState *state) {
     state->snap_requested = 1;
+}
+
+void capture_on_error(CaptureState *state, error_callback_t cb, void *userdata) {
+    if (!state) return;
+    state->error_callback = cb;
+    state->error_userdata = userdata;
+}
+
+int capture_set_display(CaptureState *state, const char *display_id) {
+    if (!state) return -1;
+    free(state->display_id);
+    state->display_id = display_id ? strdup(display_id) : NULL;
+    return 0;
+}
+
+int capture_list_displays(CaptureState *state,
+                          CaptureDisplayInfo *out, int max_displays) {
+    /* TODO Phase 3: query Mutter GetCurrentState for connector + geometry */
+    (void)state; (void)out; (void)max_displays;
+    return -1;
 }

@@ -10,15 +10,24 @@ const __filename = fileURLToPath(import.meta.url)
 const __dirname = path.dirname(__filename)
 
 const IS_LINUX = process.platform === 'linux'
+const IS_DARWIN = process.platform === 'darwin'
+const IS_WIN32 = process.platform === 'win32'
 const IS_X11 = process.env.XDG_SESSION_TYPE === 'x11'
 const IS_WAYLAND = process.env.XDG_SESSION_TYPE === 'wayland'
 // Active window tracking: macOS, Windows, and Linux X11 (via native addon)
-const SUPPORTS_ACTIVE_WINDOW = process.platform === 'darwin' || process.platform === 'win32' || IS_X11
+const SUPPORTS_ACTIVE_WINDOW = IS_DARWIN || IS_WIN32 || IS_X11
 const CAN_WARP_CURSOR = !IS_WAYLAND && typeof setCursorPosition === 'function'
 
+// Multi-instance needed for stream-based backends (each captures one monitor)
+const NEEDS_MULTI_INSTANCE = IS_WAYLAND || IS_DARWIN
 
 let MAIN_WINDOW
 let cursorPos = { x: 0, y: 0 } // Logical cursor position (mouse or arrow mode)
+
+// Display state for multi-monitor support
+let displays = []              // Electron Display objects
+let displayIdMap = new Map()   // Electron displayId → platform display ID string
+let activeDisplayIds = new Set() // Currently-capturing display IDs
 
 const CONFIG = structuredClone(DEFAULT_CONFIG)
 
@@ -642,8 +651,9 @@ let spaceHeld = false
 
 // Provide desktop capturer sources to renderer
 ipcMain.handle('get-sources', async () => {
-  if (IS_LINUX) {
-    // On Linux, always use native capture — skip desktopCapturer to avoid X11 connection exhaustion
+  if (IS_LINUX || IS_DARWIN) {
+    // Use native capture addon — required for multi-instance on macOS,
+    // and avoids X11 connection exhaustion on Linux
     return [{ id: '__native__', name: 'Native Capture' }]
   }
   const sources = await desktopCapturer.getSources({ types: ['screen'] })
@@ -710,7 +720,45 @@ function stopActiveWindowTracking() {
 function sendScreenInfo() {
   const primaryDisplay = screen.getPrimaryDisplay()
   const { width, height } = primaryDisplay.size
-  sendToRenderer('screen-info', { width, height })
+  displays = screen.getAllDisplays()
+  sendToRenderer('screen-info', {
+    width, height,
+    displays: displays.map(d => ({
+      id: d.id,
+      bounds: d.bounds,
+      scaleFactor: d.scaleFactor,
+    })),
+  })
+}
+
+/** Return displays whose bounds intersect the given viewport rect */
+function getOverlappingDisplays(vx, vy, vw, vh) {
+  return displays.filter(d => {
+    const b = d.bounds
+    return vx < b.x + b.width && vx + vw > b.x &&
+           vy < b.y + b.height && vy + vh > b.y
+  })
+}
+
+/** Refresh display list and build displayIdMap for multi-instance backends */
+function refreshDisplays() {
+  displays = screen.getAllDisplays()
+  if (!NEEDS_MULTI_INSTANCE) return
+
+  // For macOS: Electron display id maps to CGDirectDisplayID
+  // For Wayland: We'd need to match by bounds to Mutter connector strings
+  // For now, use Electron display.id as a string identifier
+  displayIdMap.clear()
+  for (const d of displays) {
+    if (IS_DARWIN) {
+      // On macOS, Electron display.id IS the CGDirectDisplayID
+      displayIdMap.set(d.id, String(d.id))
+    } else {
+      // Wayland: use Electron display id as placeholder
+      // TODO: match to Mutter connector via listDisplays() bounds comparison
+      displayIdMap.set(d.id, String(d.id))
+    }
+  }
 }
 
 function updateCaptureRegion() {
@@ -718,9 +766,37 @@ function updateCaptureRegion() {
   const [winW, winH] = MAIN_WINDOW.getSize()
   const halfW = Math.ceil(winW / CONFIG.zoomLevel / 2) + 1
   const halfH = Math.ceil(winH / CONFIG.zoomLevel / 2) + 1
-  const x = cursorPos.x - halfW
-  const y = cursorPos.y - halfH
-  sendToRenderer('capture-region', { x, y, w: halfW * 2, h: halfH * 2 })
+  const vx = cursorPos.x - halfW
+  const vy = cursorPos.y - halfH
+  const vw = halfW * 2
+  const vh = halfH * 2
+
+  // Always send the global viewport rect (used for coordinate mapping)
+  sendToRenderer('capture-region', { x: vx, y: vy, w: vw, h: vh })
+
+  if (NEEDS_MULTI_INSTANCE) {
+    // Compute which displays overlap the viewport
+    const overlapping = getOverlappingDisplays(vx, vy, vw, vh)
+    const newIds = new Set(overlapping.map(d => displayIdMap.get(d.id)).filter(Boolean))
+
+    // Only send activate-displays if the set changed or regions moved
+    const displayList = overlapping.map(d => {
+      const platformId = displayIdMap.get(d.id)
+      if (!platformId) return null
+      const b = d.bounds
+      // Compute region local to this display's coordinate space
+      const localX = vx - b.x
+      const localY = vy - b.y
+      return {
+        displayId: platformId,
+        bounds: { x: b.x, y: b.y, width: b.width, height: b.height },
+        region: { x: localX, y: localY, w: vw, h: vh },
+      }
+    }).filter(Boolean)
+
+    sendToRenderer('activate-displays', displayList)
+    activeDisplayIds = newIds
+  }
 }
 
 function startMouseTracking() {
@@ -756,16 +832,16 @@ function startMouseTracking() {
         // Ctrl+Arrow: peg to screen boundary (arrow mode only)
         if (CONFIG.inputMode === 'arrow') {
           sendToRenderer('arrow-move', { dir, peg: true })
-          // Mirror peg in main for capture region
-          const primaryDisplay = screen.getPrimaryDisplay()
-          const { width: sw, height: sh } = primaryDisplay.size
+          // Mirror peg in main for capture region — use nearest display, not primary
+          const disp = screen.getDisplayNearestPoint(cursorPos)
+          const { x: dx, y: dy, width: sw, height: sh } = disp.bounds
           const [winW, winH] = MAIN_WINDOW ? MAIN_WINDOW.getSize() : [800, 600]
           const srcW = winW / CONFIG.zoomLevel / 2
           const srcH = winH / CONFIG.zoomLevel / 2
-          if (dir === 'up') cursorPos.y = Math.floor(srcH)
-          else if (dir === 'down') cursorPos.y = sh - Math.floor(srcH)
-          else if (dir === 'left') cursorPos.x = Math.floor(srcW)
-          else if (dir === 'right') cursorPos.x = sw - Math.floor(srcW)
+          if (dir === 'up') cursorPos.y = dy + Math.floor(srcH)
+          else if (dir === 'down') cursorPos.y = dy + sh - Math.floor(srcH)
+          else if (dir === 'left') cursorPos.x = dx + Math.floor(srcW)
+          else if (dir === 'right') cursorPos.x = dx + sw - Math.floor(srcW)
           if (CAN_WARP_CURSOR) setCursorPosition(cursorPos.x, cursorPos.y)
           updateCaptureRegion()
         }
@@ -1036,12 +1112,47 @@ app.whenReady().then(async () => {
     startActiveWindowTracking()
   }
 
+  // Initialize display tracking
+  refreshDisplays()
+
+  // Dynamic hotplug: react to display changes
+  screen.on('display-added', () => {
+    refreshDisplays()
+    sendScreenInfo()
+    if (IS_X11) {
+      // X11 XShm buffer is fixed-size — needs restart to resize
+      sendToRenderer('capture-restart')
+    }
+    // Multi-instance: next updateCaptureRegion() will pick up new display
+    updateCaptureRegion()
+  })
+
+  screen.on('display-removed', () => {
+    refreshDisplays()
+    sendScreenInfo()
+    if (IS_X11) {
+      sendToRenderer('capture-restart')
+    }
+    updateCaptureRegion()
+  })
+
+  screen.on('display-metrics-changed', () => {
+    refreshDisplays()
+    sendScreenInfo()
+    if (IS_X11) {
+      sendToRenderer('capture-restart')
+    }
+    updateCaptureRegion()
+  })
+
   // Send initial capture config to the renderer (preload manages the addon)
-  if (IS_LINUX) {
+  // Native capture used on Linux + macOS; Windows uses video capture (for now)
+  if (IS_LINUX || IS_DARWIN) {
     const primaryDisplay = screen.getPrimaryDisplay()
+    const { x: ox, y: oy } = primaryDisplay.bounds
     const { width: screenW, height: screenH } = primaryDisplay.size
-    cursorPos.x = Math.floor(screenW / 2)
-    cursorPos.y = Math.floor(screenH / 2)
+    cursorPos.x = ox + Math.floor(screenW / 2)
+    cursorPos.y = oy + Math.floor(screenH / 2)
     MAIN_WINDOW.webContents.once('did-finish-load', () => {
       sendToRenderer('capture-rate', Math.round(100 / CONFIG.refreshInterval))
       updateCaptureRegion()

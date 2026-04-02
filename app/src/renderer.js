@@ -18,12 +18,15 @@ const RUNTIME = {
   activeWindowPos: { x: 0, y: 0 },
   screenWidth: 0,
   screenHeight: 0,
+  displays: [],       // Full display list from main process
   tracking: false,
   workerBusy: false,
   workerFrameId: 0,
   pendingFrame: null,
   refreshTimerId: null,
 }
+
+const MULTI_INSTANCE = !!(window.snoop && window.snoop.needsMultiInstance)
 
 const RULER_SIZE = 12
 
@@ -132,19 +135,66 @@ function needsWorkerProcessing() {
 
 function renderFrame() {
   if (CAPTURE_MODE === 'native') {
-    const frame = window.snoop.getNativeFrame()
-    if (!frame) return
+    if (MULTI_INSTANCE) {
+      // Multi-instance: composite frames from multiple displays
+      const frames = window.snoop.getNativeFrames()
+      if (!frames || frames.length === 0) return
 
-    try {
-      const { buffer, width, height } = frame
-      OFFSCREEN.width = width
-      OFFSCREEN.height = height
-      // buffer is an ArrayBuffer directly from the C addon — zero-copy
-      const pixels = new Uint8ClampedArray(buffer)
-      const imageData = new ImageData(pixels, width, height)
-      OFF_CTX.putImageData(imageData, 0, 0)
-    } catch (err) {
-      console.error('native renderFrame error:', err)
+      const region = window.snoop.getCaptureRegion()
+      // OFFSCREEN covers the viewport region size
+      const regionW = RUNTIME.screenWidth || 1920
+      const regionH = RUNTIME.screenHeight || 1080
+
+      // Use the first frame's dimensions as OFFSCREEN size hint
+      let offW = 0, offH = 0
+      for (const { frame, bounds } of frames) {
+        if (bounds) {
+          // Compute where this frame maps in viewport space
+          const dx = bounds.x - Math.max(0, region.x)
+          const dy = bounds.y - Math.max(0, region.y)
+          offW = Math.max(offW, dx + frame.width)
+          offH = Math.max(offH, dy + frame.height)
+        } else {
+          offW = Math.max(offW, frame.width)
+          offH = Math.max(offH, frame.height)
+        }
+      }
+      OFFSCREEN.width = offW
+      OFFSCREEN.height = offH
+      OFF_CTX.fillStyle = '#000'
+      OFF_CTX.fillRect(0, 0, offW, offH)
+
+      try {
+        for (const { frame, bounds } of frames) {
+          const { buffer, width, height } = frame
+          const pixels = new Uint8ClampedArray(buffer)
+          const imageData = new ImageData(pixels, width, height)
+          if (bounds) {
+            const dx = bounds.x - Math.max(0, region.x)
+            const dy = bounds.y - Math.max(0, region.y)
+            OFF_CTX.putImageData(imageData, dx, dy)
+          } else {
+            OFF_CTX.putImageData(imageData, 0, 0)
+          }
+        }
+      } catch (err) {
+        console.error('multi-instance renderFrame error:', err)
+      }
+    } else {
+      // Single-instance: one frame covers the whole viewport
+      const frame = window.snoop.getNativeFrame()
+      if (!frame) return
+
+      try {
+        const { buffer, width, height } = frame
+        OFFSCREEN.width = width
+        OFFSCREEN.height = height
+        const pixels = new Uint8ClampedArray(buffer)
+        const imageData = new ImageData(pixels, width, height)
+        OFF_CTX.putImageData(imageData, 0, 0)
+      } catch (err) {
+        console.error('native renderFrame error:', err)
+      }
     }
   } else {
     if (VIDEO.readyState < VIDEO.HAVE_CURRENT_DATA) return
@@ -168,12 +218,23 @@ function renderFrame() {
   const srcW = vpW / CONFIG.zoomLevel
   const srcH = vpH / CONFIG.zoomLevel
 
-  // Bound mode: clamp cursor to screen boundaries (like reference snoop 0.34)
+  // Bound mode: clamp cursor to the display containing the cursor center
   let curX = RUNTIME.cursorX
   let curY = RUNTIME.cursorY
-  if (CONFIG.boundMode && RUNTIME.screenWidth > 0 && RUNTIME.screenHeight > 0) {
-    curX = Math.max(0, Math.min(RUNTIME.screenWidth - 1, curX))
-    curY = Math.max(0, Math.min(RUNTIME.screenHeight - 1, curY))
+  if (CONFIG.boundMode) {
+    if (RUNTIME.displays.length > 0) {
+      // Find the display containing the cursor
+      const disp = RUNTIME.displays.find(d =>
+        curX >= d.bounds.x && curX < d.bounds.x + d.bounds.width &&
+        curY >= d.bounds.y && curY < d.bounds.y + d.bounds.height
+      ) || RUNTIME.displays[0]
+      const b = disp.bounds
+      curX = Math.max(b.x, Math.min(b.x + b.width - 1, curX))
+      curY = Math.max(b.y, Math.min(b.y + b.height - 1, curY))
+    } else if (RUNTIME.screenWidth > 0 && RUNTIME.screenHeight > 0) {
+      curX = Math.max(0, Math.min(RUNTIME.screenWidth - 1, curX))
+      curY = Math.max(0, Math.min(RUNTIME.screenHeight - 1, curY))
+    }
   }
 
   // Calculate source region in screen space (can be negative at edges)
@@ -697,16 +758,24 @@ window.snoop.onArrowMove((data) => {
   if (CONFIG.inputMode !== 'arrow') return
   const { dir, delta, peg } = data
   if (peg) {
-    // Peg to screen boundary
+    // Peg to screen boundary — use the display containing the cursor
     const rs = rulerSize()
     const vpW = CANVAS.width - rs
     const vpH = CANVAS.height - rs
     const srcW = vpW / CONFIG.zoomLevel
     const srcH = vpH / CONFIG.zoomLevel
-    if (dir === 'up') RUNTIME.cursorY = Math.floor(srcH / 2)
-    else if (dir === 'down') RUNTIME.cursorY = RUNTIME.screenHeight - Math.floor(srcH / 2)
-    else if (dir === 'left') RUNTIME.cursorX = Math.floor(srcW / 2)
-    else if (dir === 'right') RUNTIME.cursorX = RUNTIME.screenWidth - Math.floor(srcW / 2)
+    const disp = RUNTIME.displays.find(d =>
+      RUNTIME.cursorX >= d.bounds.x && RUNTIME.cursorX < d.bounds.x + d.bounds.width &&
+      RUNTIME.cursorY >= d.bounds.y && RUNTIME.cursorY < d.bounds.y + d.bounds.height
+    )
+    const dx = disp ? disp.bounds.x : 0
+    const dy = disp ? disp.bounds.y : 0
+    const dw = disp ? disp.bounds.width : RUNTIME.screenWidth
+    const dh = disp ? disp.bounds.height : RUNTIME.screenHeight
+    if (dir === 'up') RUNTIME.cursorY = dy + Math.floor(srcH / 2)
+    else if (dir === 'down') RUNTIME.cursorY = dy + dh - Math.floor(srcH / 2)
+    else if (dir === 'left') RUNTIME.cursorX = dx + Math.floor(srcW / 2)
+    else if (dir === 'right') RUNTIME.cursorX = dx + dw - Math.floor(srcW / 2)
   } else {
     const d = delta || 1
     if (dir === 'up') RUNTIME.cursorY -= d
@@ -724,6 +793,9 @@ window.snoop.onActiveWindowPos((pos) => {
 window.snoop.onScreenInfo((info) => {
   RUNTIME.screenWidth = info.width
   RUNTIME.screenHeight = info.height
+  if (info.displays) {
+    RUNTIME.displays = info.displays
+  }
 })
 
 window.snoop.onUpdate(() => {

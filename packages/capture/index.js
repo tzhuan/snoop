@@ -46,6 +46,8 @@ const noopCapture = {
   suspend() {},
   resume() {},
   snap() {},
+  setDisplay(_id) { return -1; },
+  listDisplays() { return []; },
 };
 
 export function createCapture() {
@@ -81,5 +83,28 @@ export function createCapture() {
     suspend() { if (active) active.suspend(); },
     resume() { if (active) active.resume(); },
     snap() { if (active) active.snap(); },
+    setDisplay(displayId) {
+      if (active) return active.setDisplay(displayId);
+      return -1;
+    },
+    listDisplays() {
+      if (active) return active.listDisplays();
+      return [];
+    },
+    /** Stop → setDisplay → re-register callback → start */
+    switchDisplay(displayId) {
+      if (!active) return -1;
+      active.stop();
+      active.setDisplay(displayId);
+      if (onFrameCallback) active.onFrame(onFrameCallback);
+      return active.start();
+    },
+    /** Stop → re-register callback → start (e.g. for X11 XShm hotplug) */
+    restart() {
+      if (!active) return -1;
+      active.stop();
+      if (onFrameCallback) active.onFrame(onFrameCallback);
+      return active.start();
+    },
   };
 }

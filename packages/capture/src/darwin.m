@@ -18,6 +18,9 @@ struct CaptureState {
     int screen_width;
     int screen_height;
 
+    /* Multi-monitor: 0 = main display (default) */
+    uint32_t target_display_id;
+
     /* State */
     int running;
 
@@ -37,6 +40,10 @@ struct CaptureState {
     /* Callback */
     frame_callback_t callback;
     void *userdata;
+
+    /* Error callback */
+    error_callback_t error_callback;
+    void *error_userdata;
 };
 
 static int64_t get_time_ns(void) {
@@ -160,19 +167,27 @@ int capture_start(CaptureState *state, frame_callback_t cb, void *userdata) {
         __block SCDisplay *mainDisplay = nil;
         __block NSError *fetchError = nil;
 
+        uint32_t targetId = state->target_display_id;
         [SCShareableContent getShareableContentWithCompletionHandler:
             ^(SCShareableContent *content, NSError *error) {
             if (error) {
                 fetchError = error;
             } else {
+                /* If a target display is set, find it; otherwise use main */
+                SCDisplay *fallback = nil;
                 for (SCDisplay *d in content.displays) {
-                    if (CGDisplayIsMain(d.displayID)) {
+                    if (targetId != 0 && d.displayID == targetId) {
                         mainDisplay = d;
                         break;
                     }
+                    if (CGDisplayIsMain(d.displayID)) {
+                        fallback = d;
+                    }
                 }
-                if (!mainDisplay && content.displays.count > 0) {
-                    mainDisplay = content.displays[0];
+                if (!mainDisplay) {
+                    /* Target not found (or not set) — fall back to main, then first */
+                    mainDisplay = fallback ? fallback :
+                        (content.displays.count > 0 ? content.displays[0] : nil);
                 }
             }
             dispatch_semaphore_signal(sem);
@@ -284,3 +299,38 @@ void capture_set_rate(CaptureState *state, int fps) {
 void capture_suspend(CaptureState *state) { state->suspended = 1; }
 void capture_resume(CaptureState *state) { state->suspended = 0; }
 void capture_snap(CaptureState *state) { state->snap_requested = 1; }
+
+void capture_on_error(CaptureState *state, error_callback_t cb, void *userdata) {
+    if (!state) return;
+    state->error_callback = cb;
+    state->error_userdata = userdata;
+}
+
+int capture_set_display(CaptureState *state, const char *display_id) {
+    if (!state || !display_id) return -1;
+    state->target_display_id = (uint32_t)strtoul(display_id, NULL, 10);
+    return 0;
+}
+
+int capture_list_displays(CaptureState *state,
+                          CaptureDisplayInfo *out, int max_displays) {
+    (void)state;
+    if (!out || max_displays <= 0) return 0;
+
+    /* Use CoreGraphics to enumerate displays */
+    uint32_t count = 0;
+    CGDirectDisplayID displays[32];
+    if (CGGetActiveDisplayList(32, displays, &count) != kCGErrorSuccess)
+        return -1;
+
+    int n = (int)count < max_displays ? (int)count : max_displays;
+    for (int i = 0; i < n; i++) {
+        CGRect bounds = CGDisplayBounds(displays[i]);
+        snprintf(out[i].connector, sizeof(out[i].connector), "%u", displays[i]);
+        out[i].x = (int)bounds.origin.x;
+        out[i].y = (int)bounds.origin.y;
+        out[i].width = (int)bounds.size.width;
+        out[i].height = (int)bounds.size.height;
+    }
+    return n;
+}
