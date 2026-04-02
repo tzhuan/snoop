@@ -56,3 +56,8 @@ CursorPosition platform_get_cursor_position(void) {
     }
     return pos;
 }
+
+int platform_set_cursor_position(int x, int y) {
+    CGError err = CGWarpMouseCursorPosition(CGPointMake((CGFloat)x, (CGFloat)y));
+    return (err == kCGErrorSuccess) ? 0 : -1;
+}

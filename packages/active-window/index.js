@@ -22,3 +22,7 @@ export function getActiveWindow() {
 export function getCursorPosition() {
   return native ? native.getCursorPosition() : null;
 }
+
+export function setCursorPosition(x, y) {
+  return native ? native.setCursorPosition(x, y) : false;
+}

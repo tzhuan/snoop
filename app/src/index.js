@@ -2,7 +2,7 @@ import { app, BrowserWindow, clipboard, desktopCapturer, dialog, ipcMain, Menu, 
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { uIOhook, UiohookKey } from 'uiohook-napi'
-import { getActiveWindow as nativeGetActiveWindow } from '@snoop/active-window'
+import { getActiveWindow as nativeGetActiveWindow, setCursorPosition } from '@snoop/active-window'
 import pkg from '../package.json' with { type: 'json' }
 import { DEFAULT_CONFIG } from './config-defaults.js'
 
@@ -14,6 +14,7 @@ const IS_X11 = process.env.XDG_SESSION_TYPE === 'x11'
 const IS_WAYLAND = process.env.XDG_SESSION_TYPE === 'wayland'
 // Active window tracking: macOS, Windows, and Linux X11 (via native addon)
 const SUPPORTS_ACTIVE_WINDOW = process.platform === 'darwin' || process.platform === 'win32' || IS_X11
+const CAN_WARP_CURSOR = !IS_WAYLAND && typeof setCursorPosition === 'function'
 
 
 let MAIN_WINDOW
@@ -765,6 +766,7 @@ function startMouseTracking() {
           else if (dir === 'down') cursorPos.y = sh - Math.floor(srcH)
           else if (dir === 'left') cursorPos.x = Math.floor(srcW)
           else if (dir === 'right') cursorPos.x = sw - Math.floor(srcW)
+          if (CAN_WARP_CURSOR) setCursorPosition(cursorPos.x, cursorPos.y)
           updateCaptureRegion()
         }
       } else if (e.shiftKey) {
@@ -776,6 +778,7 @@ function startMouseTracking() {
           else if (dir === 'down') cursorPos.y += d
           else if (dir === 'left') cursorPos.x -= d
           else if (dir === 'right') cursorPos.x += d
+          if (CAN_WARP_CURSOR) setCursorPosition(cursorPos.x, cursorPos.y)
           updateCaptureRegion()
         }
       } else if (CONFIG.inputMode === 'arrow') {
@@ -785,6 +788,7 @@ function startMouseTracking() {
         else if (dir === 'down') cursorPos.y++
         else if (dir === 'left') cursorPos.x--
         else if (dir === 'right') cursorPos.x++
+        if (CAN_WARP_CURSOR) setCursorPosition(cursorPos.x, cursorPos.y)
         updateCaptureRegion()
       }
       return

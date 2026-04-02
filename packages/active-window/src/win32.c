@@ -31,3 +31,7 @@ CursorPosition platform_get_cursor_position(void) {
     }
     return pos;
 }
+
+int platform_set_cursor_position(int x, int y) {
+    return SetCursorPos(x, y) ? 0 : -1;
+}

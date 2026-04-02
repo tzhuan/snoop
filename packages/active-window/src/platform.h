@@ -13,5 +13,6 @@ typedef struct {
 
 ActiveWindowInfo platform_get_active_window(void);
 CursorPosition platform_get_cursor_position(void);
+int platform_set_cursor_position(int x, int y);
 
 #endif

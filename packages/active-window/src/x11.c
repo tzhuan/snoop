@@ -113,3 +113,12 @@ CursorPosition platform_get_cursor_position(void) {
     pos.y = root_y;
     return pos;
 }
+
+int platform_set_cursor_position(int x, int y) {
+    ensure_display();
+    if (!dpy) return -1;
+    Window root = DefaultRootWindow(dpy);
+    XWarpPointer(dpy, None, root, 0, 0, 0, 0, x, y);
+    XFlush(dpy);
+    return 0;
+}
