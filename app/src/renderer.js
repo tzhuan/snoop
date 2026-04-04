@@ -220,9 +220,10 @@ function renderFrame() {
   const srcW = vpW / CONFIG.zoomLevel
   const srcH = vpH / CONFIG.zoomLevel
 
-  // Bound mode: clamp cursor to the display containing the cursor center
-  let curX = RUNTIME.cursorX
-  let curY = RUNTIME.cursorY
+  // Apply focus offset only for stream driver (cursor rendered in capture)
+  const hasCursorInCapture = CONFIG.captureDriver === 'stream'
+  let curX = RUNTIME.cursorX + (hasCursorInCapture ? (CONFIG.focusOffsetX || 0) : 0)
+  let curY = RUNTIME.cursorY + (hasCursorInCapture ? (CONFIG.focusOffsetY || 0) : 0)
   if (CONFIG.boundMode) {
     if (RUNTIME.displays.length > 0) {
       // Find the display containing the cursor
@@ -868,8 +869,9 @@ function updateTrackPosition(e) {
   const vpH = CANVAS.height - rs
   const srcW = vpW / CONFIG.zoomLevel
   const srcH = vpH / CONFIG.zoomLevel
-  const centerX = RUNTIME.cursorX
-  const centerY = RUNTIME.cursorY
+  const hasCursorInTrack = CONFIG.captureDriver === 'stream'
+  const centerX = RUNTIME.cursorX + (hasCursorInTrack ? (CONFIG.focusOffsetX || 0) : 0)
+  const centerY = RUNTIME.cursorY + (hasCursorInTrack ? (CONFIG.focusOffsetY || 0) : 0)
   const srcX = centerX - srcW / 2
   const srcY = centerY - srcH / 2
   RUNTIME.cursorX = Math.floor(srcX + (e.offsetX - rs) / CONFIG.zoomLevel)

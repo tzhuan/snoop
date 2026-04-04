@@ -17,7 +17,9 @@ export const DEFAULT_CONFIG = {
   refreshEnabled: true,
   refreshInterval: 1, // in 1/100 sec units
   shiftDelta: 8, // pixels to move per Shift+Arrow press
-  captureDriver: null, // null = platform default; 'bitblt' | 'dxgi' (Windows), 'pipewire' | 'eicc' (Wayland)
+  captureDriver: null, // null = platform default; 'bitblt' | 'dxgi' (Windows), 'pipewire' | 'eicc' (Wayland), 'stream' (X11)
+  focusOffsetX: 0, // Pixel offset to compensate for cursor in capture (stream driver)
+  focusOffsetY: 0,
   displayOptions: {
     red: true, green: true, blue: true,
     autoNormHistogram: false, autoNormGradient: false,

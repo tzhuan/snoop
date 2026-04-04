@@ -21,6 +21,9 @@ module.exports = {
   // We build native addons with cmake-js and rebuild for Electron manually.
   npmRebuild: false,
 
+  // Consistent naming: always include platform and arch
+  artifactName: '${name}-${version}-${os}-${arch}.${ext}',
+
   files: [
     'src/**/*',
     'assets/**/*',

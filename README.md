@@ -21,6 +21,8 @@ A cross-platform screen magnification and pixel inspection tool built with Elect
 - **Always on top** window mode
 - **Copy** magnified view to clipboard
 - **Cursor-free capture** on Linux (PipeWire) and macOS (ScreenCaptureKit)
+- **Multi-monitor support** with seamless cross-boundary capture and dynamic hotplug
+- **Multiple capture drivers** selectable via Drivers menu (platform-dependent)
 
 ## Project Structure
 
@@ -28,7 +30,7 @@ A cross-platform screen magnification and pixel inspection tool built with Elect
 snoop/
 ├── packages/
 │   ├── geometry/         # @snoop/geometry — native desktop geometry (active window, cursor, displays)
-│   └── capture/          # @snoop/capture — native screen capture (PipeWire/XShm/DXGI/ScreenCaptureKit)
+│   └── capture/          # @snoop/capture — native screen capture (PipeWire/XShm/DXGI/BitBlt/ScreenCaptureKit/eicc)
 ├── app/                  # Electron app
 └── package.json          # npm workspace root
 ```
@@ -112,6 +114,7 @@ npm start -w app -- -- -4 -h -top -grid
 | `Shift+Arrow` | Fast move (configurable step, default 8px) |
 | `Ctrl+Arrow` | Peg to screen boundary |
 | `Space+Arrow` | Resize window |
+| `Alt+Arrow` | Adjust focus offset (stream driver only) |
 
 ### Adjustments
 
@@ -170,26 +173,40 @@ npm start -w app -- -- -4 -h -top
 ## Building
 
 ```sh
-npm run make -w app       # Create platform installers
+npm run dist -w app       # Create platform installers
 ```
 
-## Screen Capture Backends
+## Screen Capture Drivers
 
-| Platform | Backend | Cursor-free | Notes |
-|----------|---------|-------------|-------|
-| Linux (GNOME) | PipeWire via Mutter ScreenCast | Yes | Works on both X11 and Wayland |
-| Linux (KDE, etc.) | PipeWire via xdg-desktop-portal | Yes | May show a permission dialog |
-| Linux (non-compositing) | X11 XShm | No | Fallback for basic X11 WMs |
-| macOS | ScreenCaptureKit | Yes | Requires macOS 12.3+ |
-| Windows | DXGI Desktop Duplication | Yes | |
+Snoop supports multiple capture drivers per platform. On platforms with more than one driver, a **Drivers** menu appears in the menu bar to switch at runtime.
 
-The capture backend is selected automatically at runtime. Set `SNOOP_CAPTURE=x11` or `SNOOP_CAPTURE=pipewire` to force a specific Linux backend.
+| Platform | Driver | Type | Multi-monitor | Notes |
+|----------|--------|------|---------------|-------|
+| Linux/X11 | **XShm** (default) | Polling | Native (root window spans all monitors) | Captures only the viewport region |
+| Linux/X11 | Stream (desktopCapturer) | Stream | Via compositor | Electron's built-in video pipeline |
+| Linux/Wayland | **PipeWire** (default) | Stream | Multi-instance (one stream per display) | Mutter ScreenCast or xdg-desktop-portal |
+| Linux/Wayland | ext-image-copy-capture | Stream | Multi-instance | Standardized protocol with damage tracking (wlroots, KDE) |
+| macOS | ScreenCaptureKit | Stream | Multi-instance | Uses sourceRect for viewport-only capture |
+| Windows | **BitBlt** (default) | Polling | Native (virtual desktop spans all monitors) | Simple, no DirectX capture |
+| Windows | DXGI | Stream | Multi-instance (one per output) | Captures DirectX exclusive fullscreen |
+
+The default driver is selected automatically. Set `SNOOP_CAPTURE=x11|pipewire|eicc|bitblt|dxgi` to force a specific backend via environment variable.
+
+## Multi-Monitor Support
+
+Snoop supports multi-monitor setups on all platforms:
+
+- **Polling drivers** (XShm, BitBlt): Capture any rect across all monitors in a single call. Multi-monitor is free with no additional overhead.
+- **Stream drivers** (PipeWire, eicc, DXGI, ScreenCaptureKit): One capture instance per overlapping display. Instances start/stop automatically as the viewport moves across monitor boundaries. Frames are composited in the renderer.
+- **Hotplug**: Monitors can be added/removed at runtime. X11 restarts the XShm buffer; stream backends update their instance set.
+- **Arrow mode**: On X11, Windows, and macOS, arrow keys move the real system cursor (via native cursor warping), which naturally triggers multi-monitor capture switching. Wayland uses a virtual cursor.
 
 ## Platform Notes
 
 - **macOS**: Requires screen recording permission (System Settings > Privacy & Security > Screen Recording).
 - **Linux**: Native capture addon requires PipeWire and D-Bus libraries at runtime. Falls back to XShm if unavailable.
 - **Active window coordinates**: Supported on macOS, Windows, and Linux X11 (via native addon).
+- **Cursor in capture**: The X11 Stream driver (desktopCapturer) composites the mouse cursor into the captured image. Use `Alt+Arrow` to adjust the focus offset as a workaround. All other drivers exclude the cursor.
 
 ## Credits
 

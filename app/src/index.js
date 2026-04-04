@@ -115,6 +115,7 @@ const createWindow = () => {
     height: 600,
     minWidth: 500,
     minHeight: 500,
+    show: false,
     title: `Snoop ×${CONFIG.zoomLevel} [${CONFIG.inputMode === 'arrow' ? 'A' : 'M'}] 32-bit`,
     icon: path.join(__dirname, '..', 'assets', 'icon_256x256.png'),
     webPreferences: {
@@ -934,6 +935,15 @@ function startMouseTracking() {
     // Arrow keys
     const dir = arrowKeyMap[e.keycode]
     if (dir) {
+      if (e.altKey && CONFIG.captureDriver === 'stream') {
+        // Alt+Arrow: adjust focus offset (stream driver renders cursor in capture)
+        if (dir === 'up') CONFIG.focusOffsetY--
+        else if (dir === 'down') CONFIG.focusOffsetY++
+        else if (dir === 'left') CONFIG.focusOffsetX--
+        else if (dir === 'right') CONFIG.focusOffsetX++
+        sendConfigToRenderer()
+        return
+      }
       if (spaceHeld) {
         // Space+Arrow: resize window
         if (!MAIN_WINDOW || MAIN_WINDOW.isDestroyed()) return
@@ -1086,23 +1096,28 @@ function saveConfig() {
 }
 
 function applyLoadedConfig(savedConfig) {
-  if (!savedConfig) return
-  const savedDisplayOptions = savedConfig.displayOptions
-  Object.assign(CONFIG, savedConfig)
-  if (savedDisplayOptions) {
-    CONFIG.displayOptions = { ...DEFAULT_CONFIG.displayOptions, ...savedDisplayOptions }
+  if (savedConfig) {
+    const savedDisplayOptions = savedConfig.displayOptions
+    Object.assign(CONFIG, savedConfig)
+    if (savedDisplayOptions) {
+      CONFIG.displayOptions = { ...DEFAULT_CONFIG.displayOptions, ...savedDisplayOptions }
+    }
+    buildAppMenu()
+    updateTitle()
+    sendConfigToRenderer()
+    if (MAIN_WINDOW && !MAIN_WINDOW.isDestroyed()) {
+      MAIN_WINDOW.setAlwaysOnTop(CONFIG.alwaysOnTop)
+      if (CONFIG.windowWidth && CONFIG.windowHeight) {
+        MAIN_WINDOW.setSize(CONFIG.windowWidth, CONFIG.windowHeight)
+      }
+      if (CONFIG.windowX !== undefined && CONFIG.windowY !== undefined) {
+        MAIN_WINDOW.setPosition(CONFIG.windowX, CONFIG.windowY)
+      }
+    }
   }
-  buildAppMenu()
-  updateTitle()
-  sendConfigToRenderer()
-  if (MAIN_WINDOW && !MAIN_WINDOW.isDestroyed()) {
-    MAIN_WINDOW.setAlwaysOnTop(CONFIG.alwaysOnTop)
-    if (CONFIG.windowWidth && CONFIG.windowHeight) {
-      MAIN_WINDOW.setSize(CONFIG.windowWidth, CONFIG.windowHeight)
-    }
-    if (CONFIG.windowX !== undefined && CONFIG.windowY !== undefined) {
-      MAIN_WINDOW.setPosition(CONFIG.windowX, CONFIG.windowY)
-    }
+  // Show window after size/position is applied (created with show: false)
+  if (MAIN_WINDOW && !MAIN_WINDOW.isDestroyed() && !MAIN_WINDOW.isVisible()) {
+    MAIN_WINDOW.show()
   }
 }
 
@@ -1296,6 +1311,12 @@ app.whenReady().then(async () => {
     } else {
       sendToRenderer('request-config')
     }
+    // Safety: show window even if config load fails
+    setTimeout(() => {
+      if (MAIN_WINDOW && !MAIN_WINDOW.isDestroyed() && !MAIN_WINDOW.isVisible()) {
+        MAIN_WINDOW.show()
+      }
+    }, 1000)
   })
 
   app.on('activate', () => {
