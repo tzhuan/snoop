@@ -800,6 +800,18 @@ window.snoop.onScreenInfo((info) => {
   }
 })
 
+window.snoop.onCaptureReinit(async () => {
+  // Stop existing capture
+  if (RUNTIME.stream) {
+    RUNTIME.stream.getTracks().forEach(t => t.stop())
+    RUNTIME.stream = null
+    VIDEO.srcObject = null
+  }
+  window.snoop.stopNativeCapture()
+  // Re-initialize with current driver setting
+  await initCapture()
+})
+
 window.snoop.onUpdate(() => {
   renderFrame()
 })

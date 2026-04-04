@@ -95,6 +95,8 @@ function switchCaptureDriver(driver) {
   CONFIG.captureDriver = driver
   // Notify preload to restart capture with new driver
   sendToRenderer('capture-driver-change', driver)
+  // Tell renderer to reinitialize capture (switches between native and video modes)
+  sendToRenderer('capture-reinit')
   sendConfigToRenderer()
   buildAppMenu()
 }
@@ -678,6 +680,23 @@ function buildAppMenu() {
         },
       ],
     }] : []),
+    ...(IS_X11 ? [{
+      label: '&Drivers',
+      submenu: [
+        {
+          label: 'XShm (default)',
+          type: 'radio',
+          checked: CONFIG.captureDriver !== 'stream',
+          click: () => switchCaptureDriver(null),
+        },
+        {
+          label: 'Stream (desktopCapturer)',
+          type: 'radio',
+          checked: CONFIG.captureDriver === 'stream',
+          click: () => switchCaptureDriver('stream'),
+        },
+      ],
+    }] : []),
   ]
 
   const menu = Menu.buildFromTemplate(template)
@@ -697,7 +716,12 @@ let spaceHeld = false
 
 // Provide desktop capturer sources to renderer
 ipcMain.handle('get-sources', async () => {
-  // All platforms now use native capture addon
+  // X11 with stream driver: use Electron desktopCapturer (video-based)
+  if (IS_X11 && CONFIG.captureDriver === 'stream') {
+    const sources = await desktopCapturer.getSources({ types: ['screen'] })
+    return sources.map((s) => ({ id: s.id, name: s.name }))
+  }
+  // All other cases: native capture addon
   return [{ id: '__native__', name: 'Native Capture' }]
 })
 

@@ -166,6 +166,9 @@ ipcRenderer.on('capture-driver-change', (_e, driver) => {
   // eicc and pipewire on Wayland both need multi-instance; dxgi on Windows too
   NEEDS_MULTI_INSTANCE = IS_WAYLAND || IS_DARWIN || (IS_WIN32 && driver === 'dxgi')
 
+  // 'stream' driver: renderer handles capture via desktopCapturer, no native init
+  if (driver === 'stream') return
+
   // Reinitialize single-instance if needed
   if (!NEEDS_MULTI_INSTANCE) {
     initSingleInstance()
@@ -267,6 +270,7 @@ window.snoop = {
   onActiveWindowPos: (callback) => ipcRenderer.on('active-window-pos', (_e, pos) => callback(pos)),
   onScreenInfo: (callback) => ipcRenderer.on('screen-info', (_e, info) => callback(info)),
   onArrowMove: (callback) => ipcRenderer.on('arrow-move', (_e, data) => callback(data)),
+  onCaptureReinit: (callback) => ipcRenderer.on('capture-reinit', () => callback()),
   onUpdate: (callback) => ipcRenderer.on('update', () => callback()),
   onCopyRequest: (callback) => ipcRenderer.on('copy-request', () => callback()),
   copyImage: (dataURL) => ipcRenderer.send('copy-image', dataURL),
