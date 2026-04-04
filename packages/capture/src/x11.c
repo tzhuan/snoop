@@ -21,6 +21,10 @@ struct CaptureState {
     int screen_width;
     int screen_height;
 
+    /* Current XShm buffer dimensions (may differ from screen if region-sized) */
+    int shm_w;
+    int shm_h;
+
     /* Threading */
     pthread_t thread;
     int running;
@@ -49,27 +53,25 @@ static int64_t get_time_ns(void) {
     return (int64_t)ts.tv_sec * 1000000000LL + ts.tv_nsec;
 }
 
-static int init_xshm(CaptureState *state) {
-    state->dpy = XOpenDisplay(NULL);
-    if (!state->dpy) return -1;
-
-    int screen = DefaultScreen(state->dpy);
-    state->root = RootWindow(state->dpy, screen);
-    state->screen_width = DisplayWidth(state->dpy, screen);
-    state->screen_height = DisplayHeight(state->dpy, screen);
-
-    /* Check for XShm extension */
-    if (!XShmQueryExtension(state->dpy)) {
-        fprintf(stderr, "capture: XShm extension not available\n");
-        return -1;
+/* Allocate (or reallocate) the XShm image to the given dimensions */
+static int alloc_xshm_image(CaptureState *state, int w, int h) {
+    /* Detach and free old resources */
+    if (state->image) {
+        XShmDetach(state->dpy, &state->shm_info);
+        if (state->shm_info.shmaddr && state->shm_info.shmaddr != (void *)-1) {
+            shmdt(state->shm_info.shmaddr);
+        }
+        state->image->data = NULL;
+        XDestroyImage(state->image);
+        state->image = NULL;
+        state->shm_info.shmaddr = (void *)-1;
     }
 
-    Visual *visual = DefaultVisual(state->dpy, screen);
-    int depth = DefaultDepth(state->dpy, screen);
+    Visual *visual = DefaultVisual(state->dpy, DefaultScreen(state->dpy));
+    int depth = DefaultDepth(state->dpy, DefaultScreen(state->dpy));
 
     state->image = XShmCreateImage(state->dpy, visual, depth, ZPixmap,
-                                    NULL, &state->shm_info,
-                                    state->screen_width, state->screen_height);
+                                    NULL, &state->shm_info, w, h);
     if (!state->image) return -1;
 
     state->shm_info.shmid = shmget(IPC_PRIVATE,
@@ -83,8 +85,30 @@ static int init_xshm(CaptureState *state) {
     state->shm_info.readOnly = True;
     if (!XShmAttach(state->dpy, &state->shm_info)) return -1;
 
-    /* Mark for removal once all processes detach */
     shmctl(state->shm_info.shmid, IPC_RMID, NULL);
+
+    state->shm_w = w;
+    state->shm_h = h;
+    return 0;
+}
+
+static int init_xshm(CaptureState *state) {
+    state->dpy = XOpenDisplay(NULL);
+    if (!state->dpy) return -1;
+
+    int screen = DefaultScreen(state->dpy);
+    state->root = RootWindow(state->dpy, screen);
+    state->screen_width = DisplayWidth(state->dpy, screen);
+    state->screen_height = DisplayHeight(state->dpy, screen);
+
+    if (!XShmQueryExtension(state->dpy)) {
+        fprintf(stderr, "capture: XShm extension not available\n");
+        return -1;
+    }
+
+    /* Start with full-screen buffer; will be resized to region on first frame */
+    if (alloc_xshm_image(state, state->screen_width, state->screen_height) < 0)
+        return -1;
 
     return 0;
 }
@@ -143,49 +167,64 @@ static void *capture_thread(void *arg) {
         }
         state->snap_requested = 0;
 
-        /* Capture full screen */
-        XShmGetImage(state->dpy, state->root, state->image, 0, 0, AllPlanes);
-
         if (!state->callback) continue;
 
-        uint8_t *data = (uint8_t *)state->image->data;
-        int width = state->screen_width;
-        int height = state->screen_height;
-        int stride = state->image->bytes_per_line;
-
         if (state->has_region) {
+            /* Clamp region to screen bounds */
             int rx = state->region_x;
             int ry = state->region_y;
             int rw = state->region_w;
             int rh = state->region_h;
             if (rx < 0) { rw += rx; rx = 0; }
             if (ry < 0) { rh += ry; ry = 0; }
-            if (rx + rw > width) rw = width - rx;
-            if (ry + rh > height) rh = height - ry;
+            if (rx + rw > state->screen_width) rw = state->screen_width - rx;
+            if (ry + rh > state->screen_height) rh = state->screen_height - ry;
+            if (rw <= 0 || rh <= 0) continue;
 
-            if (rw > 0 && rh > 0) {
-                int crop_stride = rw * 4;
-                uint8_t *crop = malloc(crop_stride * rh);
-                if (crop) {
-                    for (int row = 0; row < rh; row++) {
-                        bgra_to_rgba(crop + row * crop_stride,
-                                     data + (ry + row) * stride + rx * 4,
-                                     rw);
-                    }
-                    state->callback(state->userdata, crop, rw, rh, crop_stride);
-                    free(crop);
+            /* Resize XShm buffer if region size changed */
+            if (rw != state->shm_w || rh != state->shm_h) {
+                if (alloc_xshm_image(state, rw, rh) < 0) {
+                    fprintf(stderr, "capture: XShm realloc failed (%dx%d)\n", rw, rh);
+                    continue;
                 }
             }
+
+            /* Capture only the viewport region — X server copies just this rect */
+            XShmGetImage(state->dpy, state->root, state->image, rx, ry, AllPlanes);
+
+            uint8_t *data = (uint8_t *)state->image->data;
+            int stride = state->image->bytes_per_line;
+            int out_stride = rw * 4;
+            uint8_t *rgba = malloc(out_stride * rh);
+            if (rgba) {
+                for (int row = 0; row < rh; row++) {
+                    bgra_to_rgba(rgba + row * out_stride,
+                                 data + row * stride, rw);
+                }
+                state->callback(state->userdata, rgba, rw, rh, out_stride);
+                free(rgba);
+            }
         } else {
-            int rgba_stride = width * 4;
-            uint8_t *rgba = malloc(rgba_stride * height);
+            /* No region — capture full screen (startup / fallback) */
+            if (state->shm_w != state->screen_width || state->shm_h != state->screen_height) {
+                if (alloc_xshm_image(state, state->screen_width, state->screen_height) < 0)
+                    continue;
+            }
+
+            XShmGetImage(state->dpy, state->root, state->image, 0, 0, AllPlanes);
+
+            uint8_t *data = (uint8_t *)state->image->data;
+            int width = state->screen_width;
+            int height = state->screen_height;
+            int stride = state->image->bytes_per_line;
+            int out_stride = width * 4;
+            uint8_t *rgba = malloc(out_stride * height);
             if (rgba) {
                 for (int row = 0; row < height; row++) {
-                    bgra_to_rgba(rgba + row * rgba_stride,
-                                 data + row * stride,
-                                 width);
+                    bgra_to_rgba(rgba + row * out_stride,
+                                 data + row * stride, width);
                 }
-                state->callback(state->userdata, rgba, width, height, rgba_stride);
+                state->callback(state->userdata, rgba, width, height, out_stride);
                 free(rgba);
             }
         }
