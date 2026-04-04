@@ -703,14 +703,19 @@ static void on_stream_process(void *userdata) {
     pw_stream_queue_buffer(state->pw_stream, pw_buf);
 }
 
-static void on_stream_state_changed(void *userdata, enum pw_stream_state old,
+static void on_stream_state_changed(void *data, enum pw_stream_state old,
                                     enum pw_stream_state state, const char *error) {
-    (void)userdata;
+    CaptureState *cs = data;
     fprintf(stderr, "capture: PipeWire stream state: %s -> %s%s%s\n",
             pw_stream_state_as_string(old),
             pw_stream_state_as_string(state),
             error ? " error: " : "",
             error ? error : "");
+
+    if (state == PW_STREAM_STATE_ERROR && cs->error_callback) {
+        cs->error_callback(cs->error_userdata,
+                           error ? error : "PipeWire stream error");
+    }
 }
 
 static const struct pw_stream_events stream_events = {
@@ -911,7 +916,215 @@ int capture_set_display(CaptureState *state, const char *display_id) {
 
 int capture_list_displays(CaptureState *state,
                           CaptureDisplayInfo *out, int max_displays) {
-    /* TODO Phase 3: query Mutter GetCurrentState for connector + geometry */
-    (void)state; (void)out; (void)max_displays;
-    return -1;
+    if (!out || max_displays <= 0) return -1;
+
+    /* Connect to session bus if we don't have a connection yet */
+    DBusConnection *conn = state ? state->dbus : NULL;
+    int temp_conn = 0;
+    if (!conn) {
+        DBusError err;
+        dbus_error_init(&err);
+        conn = dbus_bus_get(DBUS_BUS_SESSION, &err);
+        if (dbus_error_is_set(&err) || !conn) {
+            dbus_error_free(&err);
+            return -1;
+        }
+        temp_conn = 1;
+    }
+
+    /* Call org.gnome.Mutter.DisplayConfig.GetCurrentState */
+    DBusMessage *msg = dbus_message_new_method_call(
+        "org.gnome.Mutter.DisplayConfig",
+        "/org/gnome/Mutter/DisplayConfig",
+        "org.gnome.Mutter.DisplayConfig",
+        "GetCurrentState");
+    if (!msg) {
+        if (temp_conn) dbus_connection_unref(conn);
+        return -1;
+    }
+
+    DBusError err;
+    dbus_error_init(&err);
+    DBusMessage *reply = dbus_connection_send_with_reply_and_block(
+        conn, msg, 5000, &err);
+    dbus_message_unref(msg);
+
+    if (dbus_error_is_set(&err) || !reply) {
+        dbus_error_free(&err);
+        if (temp_conn) dbus_connection_unref(conn);
+        return -1;
+    }
+
+    /*
+     * GetCurrentState returns: (serial: u, monitors: a((ssss)a(siiddada{sv})a{sv}),
+     *                           logical_monitors: a(iiduba(ssss)a{sv}), properties: a{sv})
+     *
+     * We parse logical_monitors (3rd element) which gives us:
+     *   (x: i, y: i, scale: d, transform: u, primary: b,
+     *    monitors: a(ssss), properties: a{sv})
+     * Each monitor in a logical monitor is (connector, vendor, product, serial).
+     *
+     * We also need the mode from monitors (2nd element) for width/height.
+     * Simpler: just parse monitors array for connector + current mode geometry.
+     */
+
+    DBusMessageIter root, monitors_arr;
+    dbus_message_iter_init(reply, &root);
+
+    /* Skip serial (u) */
+    if (dbus_message_iter_get_arg_type(&root) != DBUS_TYPE_UINT32) goto done;
+    dbus_message_iter_next(&root);
+
+    /* monitors: a((ssss)a(siiddada{sv})a{sv}) */
+    if (dbus_message_iter_get_arg_type(&root) != DBUS_TYPE_ARRAY) goto done;
+    dbus_message_iter_recurse(&root, &monitors_arr);
+
+    int count = 0;
+    while (dbus_message_iter_get_arg_type(&monitors_arr) == DBUS_TYPE_STRUCT
+           && count < max_displays) {
+        DBusMessageIter monitor_struct, id_struct, modes_arr;
+        dbus_message_iter_recurse(&monitors_arr, &monitor_struct);
+
+        /* (ssss) = connector, vendor, product, serial */
+        if (dbus_message_iter_get_arg_type(&monitor_struct) != DBUS_TYPE_STRUCT)
+            goto next_monitor;
+        dbus_message_iter_recurse(&monitor_struct, &id_struct);
+
+        const char *connector = NULL;
+        if (dbus_message_iter_get_arg_type(&id_struct) == DBUS_TYPE_STRING)
+            dbus_message_iter_get_basic(&id_struct, &connector);
+
+        if (!connector) goto next_monitor;
+        snprintf(out[count].connector, sizeof(out[count].connector), "%s", connector);
+
+        /* Skip to modes array: a(siiddada{sv}) */
+        dbus_message_iter_next(&monitor_struct);
+        if (dbus_message_iter_get_arg_type(&monitor_struct) != DBUS_TYPE_ARRAY)
+            goto next_monitor;
+        dbus_message_iter_recurse(&monitor_struct, &modes_arr);
+
+        /* Find the current mode (look for "is-current" in properties) */
+        out[count].width = 0;
+        out[count].height = 0;
+        while (dbus_message_iter_get_arg_type(&modes_arr) == DBUS_TYPE_STRUCT) {
+            DBusMessageIter mode_struct;
+            dbus_message_iter_recurse(&modes_arr, &mode_struct);
+
+            /* mode_id: s */
+            if (dbus_message_iter_get_arg_type(&mode_struct) != DBUS_TYPE_STRING) {
+                dbus_message_iter_next(&modes_arr);
+                continue;
+            }
+            dbus_message_iter_next(&mode_struct);
+
+            /* width: i */
+            int w = 0, h = 0;
+            if (dbus_message_iter_get_arg_type(&mode_struct) == DBUS_TYPE_INT32)
+                dbus_message_iter_get_basic(&mode_struct, &w);
+            dbus_message_iter_next(&mode_struct);
+
+            /* height: i */
+            if (dbus_message_iter_get_arg_type(&mode_struct) == DBUS_TYPE_INT32)
+                dbus_message_iter_get_basic(&mode_struct, &h);
+            dbus_message_iter_next(&mode_struct);
+
+            /* refresh: d */
+            dbus_message_iter_next(&mode_struct);
+            /* preferred_scale: d */
+            dbus_message_iter_next(&mode_struct);
+            /* supported_scales: ad */
+            dbus_message_iter_next(&mode_struct);
+
+            /* properties: a{sv} — look for is-current */
+            if (dbus_message_iter_get_arg_type(&mode_struct) == DBUS_TYPE_ARRAY) {
+                DBusMessageIter props_arr;
+                dbus_message_iter_recurse(&mode_struct, &props_arr);
+                while (dbus_message_iter_get_arg_type(&props_arr) == DBUS_TYPE_DICT_ENTRY) {
+                    DBusMessageIter entry, variant;
+                    dbus_message_iter_recurse(&props_arr, &entry);
+                    const char *key = NULL;
+                    if (dbus_message_iter_get_arg_type(&entry) == DBUS_TYPE_STRING)
+                        dbus_message_iter_get_basic(&entry, &key);
+                    if (key && strcmp(key, "is-current") == 0) {
+                        dbus_message_iter_next(&entry);
+                        if (dbus_message_iter_get_arg_type(&entry) == DBUS_TYPE_VARIANT) {
+                            dbus_message_iter_recurse(&entry, &variant);
+                            dbus_bool_t is_current = FALSE;
+                            if (dbus_message_iter_get_arg_type(&variant) == DBUS_TYPE_BOOLEAN)
+                                dbus_message_iter_get_basic(&variant, &is_current);
+                            if (is_current) {
+                                out[count].width = w;
+                                out[count].height = h;
+                            }
+                        }
+                    }
+                    dbus_message_iter_next(&props_arr);
+                }
+            }
+            dbus_message_iter_next(&modes_arr);
+        }
+
+        /* Now get position from logical_monitors */
+        out[count].x = 0;
+        out[count].y = 0;
+        if (out[count].width > 0) count++;
+
+next_monitor:
+        dbus_message_iter_next(&monitors_arr);
+    }
+
+    /* Parse logical_monitors for x/y positions */
+    dbus_message_iter_next(&root);
+    if (dbus_message_iter_get_arg_type(&root) == DBUS_TYPE_ARRAY) {
+        DBusMessageIter lm_arr;
+        dbus_message_iter_recurse(&root, &lm_arr);
+        while (dbus_message_iter_get_arg_type(&lm_arr) == DBUS_TYPE_STRUCT) {
+            DBusMessageIter lm_struct;
+            dbus_message_iter_recurse(&lm_arr, &lm_struct);
+
+            int lm_x = 0, lm_y = 0;
+            /* x: i */
+            if (dbus_message_iter_get_arg_type(&lm_struct) == DBUS_TYPE_INT32)
+                dbus_message_iter_get_basic(&lm_struct, &lm_x);
+            dbus_message_iter_next(&lm_struct);
+            /* y: i */
+            if (dbus_message_iter_get_arg_type(&lm_struct) == DBUS_TYPE_INT32)
+                dbus_message_iter_get_basic(&lm_struct, &lm_y);
+            dbus_message_iter_next(&lm_struct);
+            /* scale: d */
+            dbus_message_iter_next(&lm_struct);
+            /* transform: u */
+            dbus_message_iter_next(&lm_struct);
+            /* primary: b */
+            dbus_message_iter_next(&lm_struct);
+
+            /* monitors: a(ssss) — match connector to our list */
+            if (dbus_message_iter_get_arg_type(&lm_struct) == DBUS_TYPE_ARRAY) {
+                DBusMessageIter mon_arr;
+                dbus_message_iter_recurse(&lm_struct, &mon_arr);
+                while (dbus_message_iter_get_arg_type(&mon_arr) == DBUS_TYPE_STRUCT) {
+                    DBusMessageIter mon_id;
+                    dbus_message_iter_recurse(&mon_arr, &mon_id);
+                    const char *conn_name = NULL;
+                    if (dbus_message_iter_get_arg_type(&mon_id) == DBUS_TYPE_STRING)
+                        dbus_message_iter_get_basic(&mon_id, &conn_name);
+                    if (conn_name) {
+                        for (int i = 0; i < count; i++) {
+                            if (strcmp(out[i].connector, conn_name) == 0) {
+                                out[i].x = lm_x;
+                                out[i].y = lm_y;
+                            }
+                        }
+                    }
+                    dbus_message_iter_next(&mon_arr);
+                }
+            }
+            dbus_message_iter_next(&lm_arr);
+        }
+    }
+
+done:
+    dbus_message_unref(reply);
+    if (temp_conn) dbus_connection_unref(conn);
+    return count;
 }

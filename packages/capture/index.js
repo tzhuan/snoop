@@ -59,6 +59,29 @@ const noopCapture = {
   listDisplays() { return []; },
 };
 
+/**
+ * List native displays without starting capture.
+ * Creates a temporary capture instance just for the query.
+ */
+export function listNativeDisplays() {
+  const names = _driverOverride
+    ? [_driverOverride, ...BACKEND_NAMES.filter(n => n !== _driverOverride)]
+    : BACKEND_NAMES;
+  for (const name of names) {
+    const backend = loadBackend(name);
+    if (!backend) continue;
+    try {
+      const cap = backend.createCapture();
+      const displays = cap.listDisplays();
+      cap.stop();
+      if (displays && displays.length > 0) return displays;
+    } catch {
+      // Try next backend
+    }
+  }
+  return [];
+}
+
 export function createCapture() {
   let active = null;
   let onFrameCallback = null;

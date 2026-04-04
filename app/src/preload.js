@@ -1,5 +1,5 @@
 import { ipcRenderer } from 'electron'
-import { createCapture, setCaptureDriver } from '@snoop/capture'
+import { createCapture, setCaptureDriver, listNativeDisplays } from '@snoop/capture'
 
 // Platform detection
 const IS_LINUX = process.platform === 'linux'
@@ -29,6 +29,19 @@ function initSingleInstance() {
     nativeCapture.onFrame((buffer, width, height) => {
       latestNativeFrame = { buffer, width, height }
     })
+    nativeCapture.onError((message) => {
+      console.warn(`Capture error: ${message}, restarting...`)
+      // Restart single-instance capture after error
+      try {
+        nativeCapture.stop()
+        nativeCapture.onFrame((buffer, width, height) => {
+          latestNativeFrame = { buffer, width, height }
+        })
+        nativeCapture.start()
+      } catch (err) {
+        console.warn('Capture restart failed:', err.message)
+      }
+    })
   } catch (err) {
     console.warn('Native capture not available:', err.message)
   }
@@ -46,6 +59,11 @@ function startDisplayCapture(displayId, bounds) {
     capture.setDisplay(displayId)
     capture.onFrame((buffer, width, height) => {
       entry.latestFrame = { buffer, width, height }
+    })
+    capture.onError((message) => {
+      console.warn(`Capture error for display ${displayId}: ${message}`)
+      // Remove failed instance from active set
+      stopDisplayCapture(displayId)
     })
     capture.setRate(captureRate)
     capture.start()
@@ -176,6 +194,15 @@ ipcRenderer.on('capture-restart', () => {
       latestNativeFrame = { buffer, width, height }
     })
     nativeCapture.start()
+  }
+})
+
+// List native displays from capture addon (for Wayland/macOS connector mapping)
+ipcRenderer.on('list-native-displays', () => {
+  try {
+    ipcRenderer.send('native-displays-result', listNativeDisplays())
+  } catch {
+    ipcRenderer.send('native-displays-result', [])
   }
 })
 

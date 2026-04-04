@@ -31,6 +31,7 @@ let cursorPos = { x: 0, y: 0 } // Logical cursor position (mouse or arrow mode)
 let displays = []              // Electron Display objects
 let displayIdMap = new Map()   // Electron displayId → platform display ID string
 let activeDisplayIds = new Set() // Currently-capturing display IDs
+let nativeDisplays = []        // Native displays from capture addon (connector, x, y, w, h)
 
 const CONFIG = structuredClone(DEFAULT_CONFIG)
 
@@ -730,6 +731,65 @@ ipcMain.on('dialog-cancel', (event) => {
   if (win) win.close()
 })
 
+// Handle native display list from preload (for Wayland/macOS connector mapping)
+ipcMain.on('native-displays-result', (_event, result) => {
+  nativeDisplays = result || []
+  if (nativeDisplays.length > 0) {
+    buildDisplayIdMap()
+  }
+})
+
+/** Request native display list from preload and rebuild displayIdMap */
+function requestNativeDisplays() {
+  if (!MAIN_WINDOW || MAIN_WINDOW.isDestroyed()) return
+  sendToRenderer('list-native-displays')
+}
+
+/** Match Electron displays to native displays by bounds proximity */
+function buildDisplayIdMap() {
+  if (!needsMultiInstance()) return
+  displayIdMap.clear()
+
+  if (IS_DARWIN) {
+    // macOS: Electron display.id IS the CGDirectDisplayID
+    for (const d of displays) {
+      displayIdMap.set(d.id, String(d.id))
+    }
+  } else if (IS_WIN32 && CONFIG.captureDriver === 'dxgi') {
+    // Windows/DXGI: map to output index by sorted position
+    const sorted = [...displays].sort((a, b) =>
+      a.bounds.x !== b.bounds.x ? a.bounds.x - b.bounds.x : a.bounds.y - b.bounds.y
+    )
+    for (let i = 0; i < sorted.length; i++) {
+      displayIdMap.set(sorted[i].id, String(i))
+    }
+  } else if (nativeDisplays.length > 0) {
+    // Wayland (PipeWire/eicc): match Electron display bounds to native connector strings
+    // by finding the native display with the closest position match
+    for (const d of displays) {
+      let bestMatch = null
+      let bestDist = Infinity
+      for (const nd of nativeDisplays) {
+        const dx = d.bounds.x - nd.x
+        const dy = d.bounds.y - nd.y
+        const dist = dx * dx + dy * dy
+        if (dist < bestDist) {
+          bestDist = dist
+          bestMatch = nd
+        }
+      }
+      if (bestMatch) {
+        displayIdMap.set(d.id, bestMatch.connector)
+      }
+    }
+  } else {
+    // Fallback: use Electron display id (won't match native connectors but won't crash)
+    for (const d of displays) {
+      displayIdMap.set(d.id, String(d.id))
+    }
+  }
+}
+
 let activeWindowTrackerId = null
 
 function getActiveWindowPos() {
@@ -785,27 +845,11 @@ function refreshDisplays() {
   displays = screen.getAllDisplays()
   if (!needsMultiInstance()) return
 
-  displayIdMap.clear()
-  if (IS_DARWIN) {
-    // On macOS, Electron display.id IS the CGDirectDisplayID
-    for (const d of displays) {
-      displayIdMap.set(d.id, String(d.id))
-    }
-  } else if (IS_WIN32 && CONFIG.captureDriver === 'dxgi') {
-    // Windows/DXGI: map to output index by sorted position (left-to-right, top-to-bottom)
-    const sorted = [...displays].sort((a, b) =>
-      a.bounds.x !== b.bounds.x ? a.bounds.x - b.bounds.x : a.bounds.y - b.bounds.y
-    )
-    for (let i = 0; i < sorted.length; i++) {
-      displayIdMap.set(sorted[i].id, String(i))
-    }
-  } else {
-    // Wayland: use Electron display id as placeholder
-    // TODO: match to Mutter connector via listDisplays() bounds comparison
-    for (const d of displays) {
-      displayIdMap.set(d.id, String(d.id))
-    }
+  // For Wayland, request fresh native display list (async — buildDisplayIdMap on result)
+  if (IS_WAYLAND) {
+    requestNativeDisplays()
   }
+  buildDisplayIdMap()
 }
 
 function updateCaptureRegion() {

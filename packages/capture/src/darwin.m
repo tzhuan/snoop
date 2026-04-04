@@ -289,6 +289,40 @@ void capture_set_region(CaptureState *state, int x, int y, int w, int h) {
     state->region_w = w;
     state->region_h = h;
     state->has_region = 1;
+
+    /* Update SCStream sourceRect so the compositor only captures the viewport
+     * region, reducing GPU/memory work. The delegate still receives cropped
+     * frames in display-local coords matching the sourceRect. */
+    if (state->running && state->stream) {
+        /* Clamp to display bounds */
+        int rx = x < 0 ? 0 : x;
+        int ry = y < 0 ? 0 : y;
+        int rw = w + (x < 0 ? x : 0);
+        int rh = h + (y < 0 ? y : 0);
+        if (rx + rw > state->screen_width) rw = state->screen_width - rx;
+        if (ry + rh > state->screen_height) rh = state->screen_height - ry;
+        if (rw <= 0 || rh <= 0) return;
+
+        @autoreleasepool {
+            SCStreamConfiguration *config = [[SCStreamConfiguration alloc] init];
+            config.sourceRect = CGRectMake(rx, ry, rw, rh);
+            config.width = rw;
+            config.height = rh;
+            config.pixelFormat = kCVPixelFormatType_32BGRA;
+            config.showsCursor = NO;
+            config.minimumFrameInterval = CMTimeMake(1, state->target_fps > 0 ? state->target_fps : 30);
+            [state->stream updateConfiguration:config completionHandler:^(NSError *error) {
+                if (error) {
+                    fprintf(stderr, "capture: updateConfiguration failed: %s\n",
+                            error.localizedDescription.UTF8String);
+                }
+            }];
+        }
+
+        /* With sourceRect active, the delegate receives frames sized to the
+         * region — disable the software crop since SCK already did it. */
+        state->has_region = 0;
+    }
 }
 
 void capture_set_rate(CaptureState *state, int fps) {
