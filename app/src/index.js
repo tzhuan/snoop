@@ -402,40 +402,6 @@ function buildAppMenu() {
           label: 'Display Options...',
           click: () => showDisplayOptionsDialog(),
         },
-        ...(IS_WIN32 ? [{
-          label: 'Capture Driver',
-          submenu: [
-            {
-              label: 'BitBlt (default)',
-              type: 'radio',
-              checked: CONFIG.captureDriver !== 'dxgi',
-              click: () => switchCaptureDriver(null),
-            },
-            {
-              label: 'DXGI (DirectX)',
-              type: 'radio',
-              checked: CONFIG.captureDriver === 'dxgi',
-              click: () => switchCaptureDriver('dxgi'),
-            },
-          ],
-        }] : []),
-        ...(IS_WAYLAND ? [{
-          label: 'Capture Driver',
-          submenu: [
-            {
-              label: 'PipeWire (default)',
-              type: 'radio',
-              checked: CONFIG.captureDriver !== 'eicc',
-              click: () => switchCaptureDriver(null),
-            },
-            {
-              label: 'ext-image-copy-capture',
-              type: 'radio',
-              checked: CONFIG.captureDriver === 'eicc',
-              click: () => switchCaptureDriver('eicc'),
-            },
-          ],
-        }] : []),
         {
           label: 'Always On Top',
           type: 'checkbox',
@@ -678,6 +644,40 @@ function buildAppMenu() {
         },
       ],
     },
+    ...(IS_WIN32 ? [{
+      label: '&Drivers',
+      submenu: [
+        {
+          label: 'BitBlt (default)',
+          type: 'radio',
+          checked: CONFIG.captureDriver !== 'dxgi',
+          click: () => switchCaptureDriver(null),
+        },
+        {
+          label: 'DXGI (DirectX)',
+          type: 'radio',
+          checked: CONFIG.captureDriver === 'dxgi',
+          click: () => switchCaptureDriver('dxgi'),
+        },
+      ],
+    }] : []),
+    ...(IS_WAYLAND ? [{
+      label: '&Drivers',
+      submenu: [
+        {
+          label: 'PipeWire (default)',
+          type: 'radio',
+          checked: CONFIG.captureDriver !== 'eicc',
+          click: () => switchCaptureDriver(null),
+        },
+        {
+          label: 'ext-image-copy-capture',
+          type: 'radio',
+          checked: CONFIG.captureDriver === 'eicc',
+          click: () => switchCaptureDriver('eicc'),
+        },
+      ],
+    }] : []),
   ]
 
   const menu = Menu.buildFromTemplate(template)
