@@ -9,6 +9,7 @@ typedef struct {
 
 typedef struct {
     int x, y;
+    int valid;
 } CursorPosition;
 
 ActiveWindowInfo platform_get_active_window(void);

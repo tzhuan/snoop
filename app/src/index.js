@@ -1,8 +1,8 @@
 import { app, BrowserWindow, clipboard, desktopCapturer, dialog, ipcMain, Menu, nativeImage, screen, shell, systemPreferences } from 'electron'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { uIOhook, UiohookKey } from 'uiohook-napi'
-import { getActiveWindow as nativeGetActiveWindow, setCursorPosition } from '@snoop/geometry'
+import { getActiveWindow as nativeGetActiveWindow, setCursorPosition, getCursorPosition } from '@snoop/geometry'
+import { createCapture as createCaptureForQuery } from '@snoop/capture'
 import pkg from '../package.json' with { type: 'json' }
 import { DEFAULT_CONFIG } from './config-defaults.js'
 
@@ -19,9 +19,11 @@ const SUPPORTS_ACTIVE_WINDOW = IS_DARWIN || IS_WIN32 || IS_X11
 const CAN_WARP_CURSOR = !IS_WAYLAND && typeof setCursorPosition === 'function'
 
 // Multi-instance needed for stream-based backends (each captures one monitor).
+// On Linux, PipeWire (default) needs multi-instance; XShm (fallback) does not.
 // Evaluated as a function since captureDriver can change at runtime.
 function needsMultiInstance() {
-  return IS_WAYLAND || IS_DARWIN || (IS_WIN32 && CONFIG.captureDriver === 'dxgi')
+  if (IS_LINUX) return CONFIG.captureDriver !== 'x11'
+  return IS_DARWIN || (IS_WIN32 && CONFIG.captureDriver === 'dxgi')
 }
 
 let MAIN_WINDOW
@@ -705,15 +707,8 @@ function buildAppMenu() {
 }
 
 
-const arrowKeyMap = {
-  [UiohookKey.ArrowUp]: 'up',
-  [UiohookKey.ArrowDown]: 'down',
-  [UiohookKey.ArrowLeft]: 'left',
-  [UiohookKey.ArrowRight]: 'right',
-}
-
-let spaceHeld = false
-
+// Whether cursor position polling is available (false on pure Wayland without XWayland)
+let cursorTrackingAvailable = true
 
 // Provide desktop capturer sources to renderer
 ipcMain.handle('get-sources', async () => {
@@ -865,13 +860,22 @@ function getOverlappingDisplays(vx, vy, vw, vh) {
   })
 }
 
+// Temporary capture instance for querying display info in the main process
+let _queryCapture = null
+function getQueryCapture() {
+  if (!_queryCapture) {
+    _queryCapture = createCaptureForQuery()
+  }
+  return _queryCapture
+}
+
 /** Refresh display list and build displayIdMap for multi-instance backends */
 function refreshDisplays() {
   displays = screen.getAllDisplays()
   if (!needsMultiInstance()) return
 
-  // For Wayland, request fresh native display list (async — buildDisplayIdMap on result)
-  if (IS_WAYLAND) {
+  // For Linux (PipeWire on GNOME X11 and Wayland), request fresh native display list
+  if (IS_LINUX) {
     requestNativeDisplays()
   }
   buildDisplayIdMap()
@@ -915,172 +919,114 @@ function updateCaptureRegion() {
   }
 }
 
+let mouseTrackingTimerId = null
+
 function startMouseTracking() {
-  uIOhook.on('mousemove', (e) => {
-    if (MAIN_WINDOW && !MAIN_WINDOW.isDestroyed()) {
-      MAIN_WINDOW.webContents.send('cursor-position', { x: e.x, y: e.y })
-
-      if (CONFIG.inputMode === 'mouse') {
-        cursorPos.x = e.x
-        cursorPos.y = e.y
-        updateCaptureRegion()
-      }
-    }
-  })
-
-  uIOhook.on('keydown', (e) => {
-    // Track space key state for Space+Arrow resize
-    if (e.keycode === UiohookKey.Space) { spaceHeld = true; return }
-
-    // Arrow keys
-    const dir = arrowKeyMap[e.keycode]
-    if (dir) {
-      if (e.altKey && CONFIG.captureDriver === 'stream') {
-        // Alt+Arrow: adjust focus offset (stream driver renders cursor in capture)
-        if (dir === 'up') CONFIG.focusOffsetY--
-        else if (dir === 'down') CONFIG.focusOffsetY++
-        else if (dir === 'left') CONFIG.focusOffsetX--
-        else if (dir === 'right') CONFIG.focusOffsetX++
-        sendConfigToRenderer()
-        return
-      }
-      if (spaceHeld) {
-        // Space+Arrow: resize window
-        if (!MAIN_WINDOW || MAIN_WINDOW.isDestroyed()) return
-        const [w, h] = MAIN_WINDOW.getSize()
-        const step = (e.shiftKey ? CONFIG.shiftDelta : 1) * CONFIG.zoomLevel
-        if (dir === 'up') MAIN_WINDOW.setSize(w, Math.max(200, h - step))
-        else if (dir === 'down') MAIN_WINDOW.setSize(w, h + step)
-        else if (dir === 'left') MAIN_WINDOW.setSize(Math.max(200, w - step), h)
-        else if (dir === 'right') MAIN_WINDOW.setSize(w + step, h)
-      } else if (e.ctrlKey) {
-        // Ctrl+Arrow: peg to screen boundary (arrow mode only)
-        if (CONFIG.inputMode === 'arrow') {
-          sendToRenderer('arrow-move', { dir, peg: true })
-          // Mirror peg in main for capture region — use nearest display, not primary
-          const disp = screen.getDisplayNearestPoint(cursorPos)
-          const { x: dx, y: dy, width: sw, height: sh } = disp.bounds
-          const [winW, winH] = MAIN_WINDOW ? MAIN_WINDOW.getSize() : [800, 600]
-          const srcW = winW / CONFIG.zoomLevel / 2
-          const srcH = winH / CONFIG.zoomLevel / 2
-          if (dir === 'up') cursorPos.y = dy + Math.floor(srcH)
-          else if (dir === 'down') cursorPos.y = dy + sh - Math.floor(srcH)
-          else if (dir === 'left') cursorPos.x = dx + Math.floor(srcW)
-          else if (dir === 'right') cursorPos.x = dx + sw - Math.floor(srcW)
-          if (CAN_WARP_CURSOR) setCursorPosition(cursorPos.x, cursorPos.y)
-          updateCaptureRegion()
-        }
-      } else if (e.shiftKey) {
-        // Shift+Arrow: fast move (arrow mode only)
-        if (CONFIG.inputMode === 'arrow') {
-          sendToRenderer('arrow-move', { dir, delta: CONFIG.shiftDelta })
-          const d = CONFIG.shiftDelta
-          if (dir === 'up') cursorPos.y -= d
-          else if (dir === 'down') cursorPos.y += d
-          else if (dir === 'left') cursorPos.x -= d
-          else if (dir === 'right') cursorPos.x += d
-          if (CAN_WARP_CURSOR) setCursorPosition(cursorPos.x, cursorPos.y)
-          updateCaptureRegion()
-        }
-      } else if (CONFIG.inputMode === 'arrow') {
-        // Arrow: move 1 pixel
-        sendToRenderer('arrow-move', { dir, delta: 1 })
-        if (dir === 'up') cursorPos.y--
-        else if (dir === 'down') cursorPos.y++
-        else if (dir === 'left') cursorPos.x--
-        else if (dir === 'right') cursorPos.x++
-        if (CAN_WARP_CURSOR) setCursorPosition(cursorPos.x, cursorPos.y)
-        updateCaptureRegion()
-      }
+  // On Wayland without XWayland, getCursorPosition() returns null
+  if (IS_WAYLAND) {
+    const testPos = getCursorPosition()
+    if (!testPos) {
+      cursorTrackingAvailable = false
+      CONFIG.inputMode = 'arrow'
+      console.warn('Cursor position unavailable on Wayland (no XWayland); forcing arrow mode')
+      buildAppMenu()
+      updateTitle()
+      sendConfigToRenderer()
       return
     }
+  }
 
-    // PageUp / PageDown
-    if (e.keycode === UiohookKey.PageUp || e.keycode === UiohookKey.PageDown) {
-      const up = e.keycode === UiohookKey.PageUp
-      if (e.shiftKey && e.ctrlKey) {
-        // Ctrl+Shift+PageUp/Down: gamma
-        adjustDisplayOption('gamma', up ? 0.02 : -0.02, 0.02, 2.0)
-      } else if (e.shiftKey) {
-        // Shift+PageUp/Down: brightness
-        adjustDisplayOption('brightness', up ? 2 : -2, -100, 100)
-      } else if (e.ctrlKey) {
-        // Ctrl+PageUp/Down: contrast
-        adjustDisplayOption('contrast', up ? 2 : -2, -100, 100)
-      } else {
-        // PageUp/Down: histogram scale
-        sendToRenderer('histogram-scale', up ? 'up' : 'down')
-      }
-      return
-    }
+  const pollMs = Math.max(16, Math.round(1000 / Math.max(1, 100 / CONFIG.refreshInterval)))
+  mouseTrackingTimerId = setInterval(() => {
+    if (!MAIN_WINDOW || MAIN_WINDOW.isDestroyed()) return
+    const pos = getCursorPosition()
+    if (!pos) return
 
-    // Home: reset histogram scale
-    if (e.keycode === UiohookKey.Home) {
-      sendToRenderer('histogram-scale', 'reset')
-      return
-    }
+    sendToRenderer('cursor-position', { x: pos.x, y: pos.y })
 
-    // Tab: cycle filter
-    if (e.keycode === UiohookKey.Tab) {
-      cycleFilter()
-      return
+    if (CONFIG.inputMode === 'mouse') {
+      cursorPos.x = pos.x
+      cursorPos.y = pos.y
+      updateCaptureRegion()
     }
-
-    // +/=/- zoom
-    if (e.keycode === UiohookKey.Equal || e.keycode === UiohookKey.NumpadAdd) {
-      zoomIn()
-      return
-    }
-    if (e.keycode === UiohookKey.Minus || e.keycode === UiohookKey.NumpadSubtract) {
-      zoomOut()
-      return
-    }
-
-    // Backspace: reset to defaults
-    if (e.keycode === UiohookKey.Backspace) {
-      resetToDefaults()
-      return
-    }
-
-    // Delete: clear all saved configs
-    if (e.keycode === UiohookKey.Delete) {
-      sendToRenderer('clear-all-configs')
-      return
-    }
-
-    // Ctrl+F1-F9: load config slot, Shift+F1-F9: save config slot
-    const fKeyMap = {
-      [UiohookKey.F1]: 1, [UiohookKey.F2]: 2, [UiohookKey.F3]: 3,
-      [UiohookKey.F4]: 4, [UiohookKey.F5]: 5, [UiohookKey.F6]: 6,
-      [UiohookKey.F7]: 7, [UiohookKey.F8]: 8, [UiohookKey.F9]: 9,
-    }
-    const fNum = fKeyMap[e.keycode]
-    if (fNum !== undefined) {
-      if (e.ctrlKey && !e.shiftKey) {
-        sendToRenderer('load-config-slot', fNum)
-        return
-      }
-      if (e.shiftKey && !e.ctrlKey) {
-        if (MAIN_WINDOW && !MAIN_WINDOW.isDestroyed()) {
-          const [w, h] = MAIN_WINDOW.getSize()
-          const [x, y] = MAIN_WINDOW.getPosition()
-          CONFIG.windowWidth = w
-          CONFIG.windowHeight = h
-          CONFIG.windowX = x
-          CONFIG.windowY = y
-        }
-        sendToRenderer('save-config-slot', { slot: fNum, config: CONFIG })
-        return
-      }
-    }
-  })
-
-  uIOhook.on('keyup', (e) => {
-    if (e.keycode === UiohookKey.Space) spaceHeld = false
-  })
-
-  uIOhook.start()
+  }, pollMs)
 }
+
+function stopMouseTracking() {
+  if (mouseTrackingTimerId) {
+    clearInterval(mouseTrackingTimerId)
+    mouseTrackingTimerId = null
+  }
+}
+
+// IPC handlers for keyboard actions from renderer
+ipcMain.on('resize-window', (_e, w, h) => {
+  if (MAIN_WINDOW && !MAIN_WINDOW.isDestroyed()) {
+    MAIN_WINDOW.setSize(Math.max(200, w), Math.max(200, h))
+  }
+})
+
+ipcMain.on('zoom-in', () => zoomIn())
+ipcMain.on('zoom-out', () => zoomOut())
+ipcMain.on('cycle-filter', () => cycleFilter())
+ipcMain.on('reset-defaults', () => resetToDefaults())
+
+ipcMain.on('adjust-display-option', (_e, key, delta, min, max) => {
+  adjustDisplayOption(key, delta, min, max)
+})
+
+ipcMain.on('histogram-scale-action', (_e, action) => {
+  sendToRenderer('histogram-scale', action)
+})
+
+ipcMain.on('adjust-focus-offset', (_e, dx, dy) => {
+  CONFIG.focusOffsetX = (CONFIG.focusOffsetX || 0) + dx
+  CONFIG.focusOffsetY = (CONFIG.focusOffsetY || 0) + dy
+  sendConfigToRenderer()
+})
+
+ipcMain.on('peg-cursor', (_e, dir) => {
+  if (CONFIG.inputMode !== 'arrow') return
+  const disp = screen.getDisplayNearestPoint(cursorPos)
+  const { x: dx, y: dy, width: sw, height: sh } = disp.bounds
+  const [winW, winH] = MAIN_WINDOW ? MAIN_WINDOW.getSize() : [800, 600]
+  const srcW = winW / CONFIG.zoomLevel / 2
+  const srcH = winH / CONFIG.zoomLevel / 2
+  if (dir === 'up') cursorPos.y = dy + Math.floor(srcH)
+  else if (dir === 'down') cursorPos.y = dy + sh - Math.floor(srcH)
+  else if (dir === 'left') cursorPos.x = dx + Math.floor(srcW)
+  else if (dir === 'right') cursorPos.x = dx + sw - Math.floor(srcW)
+  if (CAN_WARP_CURSOR) setCursorPosition(cursorPos.x, cursorPos.y)
+  updateCaptureRegion()
+})
+
+ipcMain.on('move-cursor', (_e, dx, dy) => {
+  if (CONFIG.inputMode !== 'arrow') return
+  cursorPos.x += dx
+  cursorPos.y += dy
+  if (CAN_WARP_CURSOR) setCursorPosition(cursorPos.x, cursorPos.y)
+  updateCaptureRegion()
+})
+
+ipcMain.on('clear-all-configs', () => {
+  sendToRenderer('clear-all-configs')
+})
+
+ipcMain.on('save-config-slot-request', (_e, slot) => {
+  if (MAIN_WINDOW && !MAIN_WINDOW.isDestroyed()) {
+    const [w, h] = MAIN_WINDOW.getSize()
+    const [x, y] = MAIN_WINDOW.getPosition()
+    CONFIG.windowWidth = w
+    CONFIG.windowHeight = h
+    CONFIG.windowX = x
+    CONFIG.windowY = y
+  }
+  sendToRenderer('save-config-slot', { slot, config: CONFIG })
+})
+
+ipcMain.on('load-config-slot-request', (_e, slot) => {
+  sendToRenderer('load-config-slot', slot)
+})
 
 // Config persistence
 function saveConfig() {
@@ -1334,7 +1280,7 @@ app.on('window-all-closed', () => {
 
 app.on('before-quit', () => {
   stopActiveWindowTracking()
-  try { uIOhook.stop() } catch {}
+  stopMouseTracking()
   // Force exit after cleanup in case something still blocks
   setTimeout(() => process.exit(0), 500)
 })

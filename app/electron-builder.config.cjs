@@ -35,7 +35,6 @@ module.exports = {
   asarUnpack: [
     'node_modules/@snoop/*/prebuilds/**',
     'node_modules/@snoop/*/build/**',
-    'node_modules/uiohook-napi/**',
   ],
 
   mac: {
@@ -66,11 +65,11 @@ module.exports = {
   },
 
   deb: {
-    depends: ['libx11-6', 'libxext6', 'libxtst6'],
+    depends: ['libx11-6', 'libxext6'],
   },
 
   rpm: {
-    depends: ['libX11', 'libXext', 'libXtst'],
+    depends: ['libX11', 'libXext'],
   },
 
   publish: {

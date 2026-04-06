@@ -32,6 +32,11 @@ static napi_value GetActiveWindow(napi_env env, napi_callback_info info) {
 
 static napi_value GetCursorPosition(napi_env env, napi_callback_info info) {
     CursorPosition pos = platform_get_cursor_position();
+    if (!pos.valid) {
+        napi_value null_val;
+        napi_get_null(env, &null_val);
+        return null_val;
+    }
 
     napi_value obj, val;
     napi_create_object(env, &obj);

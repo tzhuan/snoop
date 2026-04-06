@@ -52,6 +52,7 @@ CursorPosition platform_get_cursor_position(void) {
         CGPoint loc = CGEventGetLocation(event);
         pos.x = (int)loc.x;
         pos.y = (int)loc.y;
+        pos.valid = 1;
         CFRelease(event);
     }
     return pos;

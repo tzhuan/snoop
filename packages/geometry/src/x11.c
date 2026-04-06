@@ -111,6 +111,7 @@ CursorPosition platform_get_cursor_position(void) {
 
     pos.x = root_x;
     pos.y = root_y;
+    pos.valid = 1;
     return pos;
 }
 

@@ -19,8 +19,7 @@
   "license": "BSD-3-Clause",
   "dependencies": {
     "@snoop/capture": "*",
-    "@snoop/geometry": "*",
-    "uiohook-napi": "^1.5.5"
+    "@snoop/geometry": "*"
   },
   "devDependencies": {
     "@electron/rebuild": "^4.0.3",

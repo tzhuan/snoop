@@ -757,36 +757,99 @@ window.snoop.onCursorPosition((point) => {
   }
 })
 
-window.snoop.onArrowMove((data) => {
-  if (CONFIG.inputMode !== 'arrow') return
-  const { dir, delta, peg } = data
-  if (peg) {
-    // Peg to screen boundary — use the display containing the cursor
-    const rs = rulerSize()
-    const vpW = CANVAS.width - rs
-    const vpH = CANVAS.height - rs
-    const srcW = vpW / CONFIG.zoomLevel
-    const srcH = vpH / CONFIG.zoomLevel
-    const disp = RUNTIME.displays.find(d =>
-      RUNTIME.cursorX >= d.bounds.x && RUNTIME.cursorX < d.bounds.x + d.bounds.width &&
-      RUNTIME.cursorY >= d.bounds.y && RUNTIME.cursorY < d.bounds.y + d.bounds.height
-    )
-    const dx = disp ? disp.bounds.x : 0
-    const dy = disp ? disp.bounds.y : 0
-    const dw = disp ? disp.bounds.width : RUNTIME.screenWidth
-    const dh = disp ? disp.bounds.height : RUNTIME.screenHeight
-    if (dir === 'up') RUNTIME.cursorY = dy + Math.floor(srcH / 2)
-    else if (dir === 'down') RUNTIME.cursorY = dy + dh - Math.floor(srcH / 2)
-    else if (dir === 'left') RUNTIME.cursorX = dx + Math.floor(srcW / 2)
-    else if (dir === 'right') RUNTIME.cursorX = dx + dw - Math.floor(srcW / 2)
-  } else {
-    const d = delta || 1
-    if (dir === 'up') RUNTIME.cursorY -= d
-    else if (dir === 'down') RUNTIME.cursorY += d
-    else if (dir === 'left') RUNTIME.cursorX -= d
-    else if (dir === 'right') RUNTIME.cursorX += d
+// Keyboard shortcuts (DOM events — active when window is focused)
+let spaceHeld = false
+const ARROW_DIRS = { ArrowUp: 'up', ArrowDown: 'down', ArrowLeft: 'left', ArrowRight: 'right' }
+
+document.addEventListener('keydown', (e) => {
+  if (e.code === 'Space') { spaceHeld = true; e.preventDefault(); return }
+
+  const dir = ARROW_DIRS[e.code]
+  if (dir) {
+    e.preventDefault()
+    if (e.altKey && CONFIG.captureDriver === 'stream') {
+      // Alt+Arrow: adjust focus offset (stream driver renders cursor in capture)
+      const dx = dir === 'left' ? -1 : dir === 'right' ? 1 : 0
+      const dy = dir === 'up' ? -1 : dir === 'down' ? 1 : 0
+      window.snoop.adjustFocusOffset(dx, dy)
+    } else if (spaceHeld) {
+      // Space+Arrow: resize window
+      const [w, h] = [window.innerWidth, window.innerHeight]
+      const step = (e.shiftKey ? CONFIG.shiftDelta : 1) * CONFIG.zoomLevel
+      if (dir === 'up') window.snoop.resizeWindow(w, Math.max(200, h - step))
+      else if (dir === 'down') window.snoop.resizeWindow(w, h + step)
+      else if (dir === 'left') window.snoop.resizeWindow(Math.max(200, w - step), h)
+      else if (dir === 'right') window.snoop.resizeWindow(w + step, h)
+    } else if (e.ctrlKey && CONFIG.inputMode === 'arrow') {
+      // Ctrl+Arrow: peg to screen boundary
+      // Update renderer cursor position
+      const rs = rulerSize()
+      const vpW = CANVAS.width - rs
+      const vpH = CANVAS.height - rs
+      const srcW = vpW / CONFIG.zoomLevel
+      const srcH = vpH / CONFIG.zoomLevel
+      const disp = RUNTIME.displays.find(d =>
+        RUNTIME.cursorX >= d.bounds.x && RUNTIME.cursorX < d.bounds.x + d.bounds.width &&
+        RUNTIME.cursorY >= d.bounds.y && RUNTIME.cursorY < d.bounds.y + d.bounds.height
+      )
+      const dx = disp ? disp.bounds.x : 0
+      const dy = disp ? disp.bounds.y : 0
+      const dw = disp ? disp.bounds.width : RUNTIME.screenWidth
+      const dh = disp ? disp.bounds.height : RUNTIME.screenHeight
+      if (dir === 'up') RUNTIME.cursorY = dy + Math.floor(srcH / 2)
+      else if (dir === 'down') RUNTIME.cursorY = dy + dh - Math.floor(srcH / 2)
+      else if (dir === 'left') RUNTIME.cursorX = dx + Math.floor(srcW / 2)
+      else if (dir === 'right') RUNTIME.cursorX = dx + dw - Math.floor(srcW / 2)
+      window.snoop.pegCursor(dir)
+      renderFrame()
+    } else if (CONFIG.inputMode === 'arrow') {
+      // Arrow / Shift+Arrow: move cursor
+      const d = e.shiftKey ? CONFIG.shiftDelta : 1
+      if (dir === 'up') { RUNTIME.cursorY -= d; window.snoop.moveCursor(0, -d) }
+      else if (dir === 'down') { RUNTIME.cursorY += d; window.snoop.moveCursor(0, d) }
+      else if (dir === 'left') { RUNTIME.cursorX -= d; window.snoop.moveCursor(-d, 0) }
+      else if (dir === 'right') { RUNTIME.cursorX += d; window.snoop.moveCursor(d, 0) }
+      renderFrame()
+    }
+    return
   }
-  renderFrame()
+
+  // PageUp / PageDown
+  if (e.code === 'PageUp' || e.code === 'PageDown') {
+    e.preventDefault()
+    const up = e.code === 'PageUp'
+    if (e.shiftKey && e.ctrlKey) {
+      window.snoop.adjustDisplayOption('gamma', up ? 0.02 : -0.02, 0.02, 2.0)
+    } else if (e.shiftKey) {
+      window.snoop.adjustDisplayOption('brightness', up ? 2 : -2, -100, 100)
+    } else if (e.ctrlKey) {
+      window.snoop.adjustDisplayOption('contrast', up ? 2 : -2, -100, 100)
+    } else {
+      window.snoop.histogramScale(up ? 'up' : 'down')
+    }
+    return
+  }
+
+  if (e.code === 'Home') { e.preventDefault(); window.snoop.histogramScale('reset'); return }
+  if (e.code === 'Tab') { e.preventDefault(); window.snoop.cycleFilter(); return }
+  if (e.code === 'Equal' || e.code === 'NumpadAdd') { e.preventDefault(); window.snoop.zoomIn(); return }
+  if (e.code === 'Minus' || e.code === 'NumpadSubtract') { e.preventDefault(); window.snoop.zoomOut(); return }
+  if (e.code === 'Backspace') { e.preventDefault(); window.snoop.resetDefaults(); return }
+  if (e.code === 'Delete') { e.preventDefault(); window.snoop.clearAllConfigs(); return }
+
+  // F1-F9: Ctrl+F = load slot, Shift+F = save slot
+  const fMatch = e.code.match(/^F(\d)$/)
+  if (fMatch) {
+    const slot = parseInt(fMatch[1])
+    if (slot >= 1 && slot <= 9) {
+      if (e.ctrlKey && !e.shiftKey) { e.preventDefault(); window.snoop.loadConfigSlot(slot); return }
+      if (e.shiftKey && !e.ctrlKey) { e.preventDefault(); window.snoop.saveConfigSlot(slot); return }
+    }
+  }
+})
+
+document.addEventListener('keyup', (e) => {
+  if (e.code === 'Space') spaceHeld = false
 })
 
 window.snoop.onActiveWindowPos((pos) => {

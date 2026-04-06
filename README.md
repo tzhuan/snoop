@@ -15,7 +15,7 @@ A cross-platform screen magnification and pixel inspection tool built with Elect
 - **Coordinate systems** — screen absolute or active window relative, with Y-axis inversion
 - **Hex mode** for RGB values
 - **Bound mode** to prevent viewing outside screen boundaries
-- **Mouse and arrow key** input modes
+- **Mouse and arrow key** input modes (mouse mode requires X11 or XWayland; Wayland without XWayland is arrow-mode only)
 - **Track mode** — drag inside the magnifier to move the zoom center
 - **Configuration persistence** with 10 save slots
 - **Always on top** window mode
@@ -69,6 +69,8 @@ npm start -w app -- -- -4 -h -top -grid
 ```
 
 ## Keyboard Shortcuts
+
+Keyboard shortcuts are active when the Snoop window is focused.
 
 ### Zoom
 
@@ -182,9 +184,9 @@ Snoop supports multiple capture drivers per platform. On platforms with more tha
 
 | Platform | Driver | Type | Multi-monitor | Notes |
 |----------|--------|------|---------------|-------|
-| Linux/X11 | **XShm** (default) | Polling | Native (root window spans all monitors) | Captures only the viewport region |
+| Linux/GNOME (X11 or Wayland) | **PipeWire** (default) | Stream | Multi-instance (one stream per display) | Mutter ScreenCast D-Bus API |
+| Linux/X11 (non-GNOME) | **XShm** | Polling | Native (root window spans all monitors) | Fallback when PipeWire/Mutter unavailable |
 | Linux/X11 | Stream (desktopCapturer) | Stream | Via compositor | Electron's built-in video pipeline |
-| Linux/Wayland | **PipeWire** (default) | Stream | Multi-instance (one stream per display) | Mutter ScreenCast or xdg-desktop-portal |
 | Linux/Wayland | ext-image-copy-capture | Stream | Multi-instance | Standardized protocol with damage tracking (wlroots, KDE) |
 | macOS | ScreenCaptureKit | Stream | Multi-instance | Uses sourceRect for viewport-only capture |
 | Windows | **BitBlt** (default) | Polling | Native (virtual desktop spans all monitors) | Simple, no DirectX capture |
@@ -204,7 +206,10 @@ Snoop supports multi-monitor setups on all platforms:
 ## Platform Notes
 
 - **macOS**: Requires screen recording permission (System Settings > Privacy & Security > Screen Recording).
-- **Linux**: Native capture addon requires PipeWire and D-Bus libraries at runtime. Falls back to XShm if unavailable.
+- **Linux (GNOME)**: PipeWire capture with multi-monitor support. Requires PipeWire and D-Bus libraries at runtime.
+- **Linux (Wayland)**: Mouse tracking works via XWayland (if `DISPLAY` is set). Without XWayland, only arrow-key mode is available. Wayland prohibits clients from warping the cursor, so arrow mode uses a virtual cursor.
+- **Linux (X11 non-GNOME)**: Falls back to XShm if PipeWire/Mutter is unavailable. XShm captures the root window which spans all monitors.
+- **Windows**: BitBlt (default) captures across all monitors. DXGI (opt-in via Drivers menu) captures DirectX game content but requires one stream per monitor.
 - **Active window coordinates**: Supported on macOS, Windows, and Linux X11 (via native addon).
 - **Cursor in capture**: The X11 Stream driver (desktopCapturer) composites the mouse cursor into the captured image. Use `Alt+Arrow` to adjust the focus offset as a workaround. All other drivers exclude the cursor.
 

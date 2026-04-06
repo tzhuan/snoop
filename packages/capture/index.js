@@ -125,6 +125,18 @@ export function createCapture() {
     },
     listDisplays() {
       if (active) return active.listDisplays();
+      // Allow listing displays without starting capture — try each backend
+      const names = _driverOverride
+        ? [_driverOverride, ...BACKEND_NAMES.filter(n => n !== _driverOverride)]
+        : BACKEND_NAMES;
+      for (const name of names) {
+        const backend = loadBackend(name);
+        if (!backend) continue;
+        const cap = backend.createCapture();
+        const result = cap.listDisplays();
+        cap.stop(); // clean up
+        if (result && result.length > 0) return result;
+      }
       return [];
     },
     /** Stop → setDisplay → re-register callback → start */

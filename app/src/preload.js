@@ -9,7 +9,8 @@ const IS_WAYLAND = IS_LINUX && !!process.env.WAYLAND_DISPLAY
 
 // Multi-instance is needed for stream-based backends where each capture
 // targets one monitor. Polling backends handle multi-monitor natively.
-let NEEDS_MULTI_INSTANCE = IS_WAYLAND || IS_DARWIN
+// Linux: PipeWire (default) needs multi-instance; XShm does not.
+let NEEDS_MULTI_INSTANCE = IS_LINUX || IS_DARWIN
 // Windows DXGI also needs multi-instance (set dynamically via capture-driver-change)
 
 // --- Single-instance path (X11 XShm, Windows BitBlt) ---
@@ -163,8 +164,8 @@ ipcRenderer.on('capture-driver-change', (_e, driver) => {
   setCaptureDriver(driver)
 
   // Update multi-instance flag
-  // eicc and pipewire on Wayland both need multi-instance; dxgi on Windows too
-  NEEDS_MULTI_INSTANCE = IS_WAYLAND || IS_DARWIN || (IS_WIN32 && driver === 'dxgi')
+  // Linux PipeWire/eicc need multi-instance (XShm does not); dxgi on Windows too
+  NEEDS_MULTI_INSTANCE = (IS_LINUX && driver !== 'x11') || IS_DARWIN || (IS_WIN32 && driver === 'dxgi')
 
   // 'stream' driver: renderer handles capture via desktopCapturer, no native init
   if (driver === 'stream') return
@@ -269,10 +270,24 @@ window.snoop = {
   onCursorPosition: (callback) => ipcRenderer.on('cursor-position', (_e, point) => callback(point)),
   onActiveWindowPos: (callback) => ipcRenderer.on('active-window-pos', (_e, pos) => callback(pos)),
   onScreenInfo: (callback) => ipcRenderer.on('screen-info', (_e, info) => callback(info)),
-  onArrowMove: (callback) => ipcRenderer.on('arrow-move', (_e, data) => callback(data)),
   onCaptureReinit: (callback) => ipcRenderer.on('capture-reinit', () => callback()),
   onUpdate: (callback) => ipcRenderer.on('update', () => callback()),
   onCopyRequest: (callback) => ipcRenderer.on('copy-request', () => callback()),
   copyImage: (dataURL) => ipcRenderer.send('copy-image', dataURL),
   onHistogramScale: (callback) => ipcRenderer.on('histogram-scale', (_e, action) => callback(action)),
+
+  // Keyboard actions (renderer → main)
+  resizeWindow: (w, h) => ipcRenderer.send('resize-window', w, h),
+  zoomIn: () => ipcRenderer.send('zoom-in'),
+  zoomOut: () => ipcRenderer.send('zoom-out'),
+  cycleFilter: () => ipcRenderer.send('cycle-filter'),
+  resetDefaults: () => ipcRenderer.send('reset-defaults'),
+  adjustDisplayOption: (key, delta, min, max) => ipcRenderer.send('adjust-display-option', key, delta, min, max),
+  pegCursor: (dir) => ipcRenderer.send('peg-cursor', dir),
+  moveCursor: (dx, dy) => ipcRenderer.send('move-cursor', dx, dy),
+  clearAllConfigs: () => ipcRenderer.send('clear-all-configs'),
+  saveConfigSlot: (slot) => ipcRenderer.send('save-config-slot-request', slot),
+  loadConfigSlot: (slot) => ipcRenderer.send('load-config-slot-request', slot),
+  histogramScale: (action) => ipcRenderer.send('histogram-scale-action', action),
+  adjustFocusOffset: (dx, dy) => ipcRenderer.send('adjust-focus-offset', dx, dy),
 }

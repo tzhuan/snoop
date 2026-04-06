@@ -28,6 +28,7 @@ CursorPosition platform_get_cursor_position(void) {
     if (GetCursorPos(&pt)) {
         pos.x = pt.x;
         pos.y = pt.y;
+        pos.valid = 1;
     }
     return pos;
 }
